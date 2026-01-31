@@ -1,0 +1,40 @@
+{
+  "name": "ebirdtripplanner",
+  "version": "0.1.0",
+  "author": "Raphaël Nussbaumer",
+  "license": "GPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rafnuss/eBirdTripPlanner.git"
+  },
+  "homepage": "https://github.com/rafnuss/eBirdTripPlanner",
+  "bugs": {
+    "url": "https://github.com/rafnuss/eBirdTripPlanner/issues"
+  },
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "download-taxo": "node scripts/download_taxonomy.js"
+  },
+  "dependencies": {
+    "bootstrap": "^5.3.8",
+    "bootstrap-icons": "^1.13.1",
+    "bootswatch": "^5.3.7",
+    "dexie": "^4.0.11",
+    "jszip": "^3.10.1",
+    "mapbox-gl": "^3.16.0",
+    "papaparse": "^5.5.3",
+    "vue-select": "^4.0.0-beta.6",
+    "@vueform/slider": "^2.1.10",
+    "@turf/turf": "^7.2.0",
+    "vue": "^3.5.18",
+    "vue-router": "^4.5.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.1",
+    "vite": "^6.0.0",
+    "vite-plugin-pwa": "^0.21.0"
+  }
+}
