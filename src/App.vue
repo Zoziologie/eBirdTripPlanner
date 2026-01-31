@@ -10,7 +10,6 @@ const bodyClass = computed(() =>
     ? "flex-grow-1 d-flex flex-column overflow-hidden full-page-main"
     : "flex-grow-1 container pb-4",
 );
-const hasTrips = computed(() => trips.value.length > 0);
 
 onMounted(() => {
   refreshTrips();
@@ -38,6 +37,10 @@ onMounted(() => {
               </button>
               <ul class="dropdown-menu dropdown-menu-end">
                 <li>
+                  <span class="dropdown-item-text small text-muted"> Navigate to: </span>
+                </li>
+                <li><hr class="dropdown-divider" /></li>
+                <li>
                   <router-link to="/create" class="dropdown-item">Create</router-link>
                 </li>
                 <li>
@@ -52,8 +55,8 @@ onMounted(() => {
               </ul>
             </div>
           </div>
-          <div class="col-12 col-sm order-3 order-sm-2 d-flex justify-content-center">
-            <nav class="d-none d-sm-flex gap-3 justify-content-center">
+          <div class="col-12 col-sm order-3 order-sm-2 d-flex justify-content-end">
+            <nav class="d-none d-sm-flex gap-3 justify-content-end">
               <router-link
                 to="/create"
                 class="nav-link p-0 text-decoration-none text-nowrap"
@@ -79,20 +82,6 @@ onMounted(() => {
                 >Species List</router-link
               >
             </nav>
-          </div>
-          <div class="col-12 col-sm-auto order-2 order-sm-3">
-            <div class="d-flex justify-content-sm-end">
-              <select
-                v-if="hasTrips"
-                v-model="selectedTripId"
-                class="form-select trip-select w-100 w-sm-auto"
-              >
-                <option v-for="trip in trips" :key="trip.id" :value="trip.id">
-                  {{ trip.name }}
-                </option>
-              </select>
-              <span v-else class="text-muted">No trips yet</span>
-            </div>
           </div>
         </div>
       </div>

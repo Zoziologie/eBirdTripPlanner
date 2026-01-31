@@ -3,8 +3,6 @@ import { ref, onMounted, watch, computed, nextTick } from "vue";
 import { Tooltip } from "bootstrap";
 import vSelect from "vue-select";
 import "vue-select/dist/vue-select.css";
-import Slider from "@vueform/slider";
-import "@vueform/slider/themes/default.css";
 import { db } from "../data/db";
 import { trips, selectedTripId, refreshTrips } from "../state/tripSelection";
 import { selectedVisitId } from "../state/visitSelection";
@@ -29,6 +27,7 @@ const locationMinRate = ref(0.05);
 const selectedTrip = computed(
   () => trips.value.find((item) => item.id === selectedTripId.value) || null,
 );
+const locationFiltersActive = computed(() => Boolean(selectedVisitId.value));
 
 const locationMeta = computed(() => {
   const base = locations.value || [];
@@ -393,14 +392,16 @@ const sortedSpecies = computed(() => {
     }
     const rate = selectedVisitId.value ? species.locationRate : species.overallRate;
     const normalizedRate = rate === null || rate === undefined || Number.isNaN(rate) ? 0 : rate;
-    const minRate = Number(locationMinRate.value ?? 0);
-    if (normalizedRate < minRate) return false;
-    const cumThreshold = Number(cumulativeTripMax.value ?? 1);
-    const totalProbability =
-      species.totalProbability === null || species.totalProbability === undefined
-        ? 0
-        : Number(species.totalProbability);
-    if (Number.isFinite(totalProbability) && totalProbability > cumThreshold) return false;
+    if (locationFiltersActive.value) {
+      const minRate = Number(locationMinRate.value ?? 0);
+      if (normalizedRate < minRate) return false;
+      const cumThreshold = Number(cumulativeTripMax.value ?? 1);
+      const totalProbability =
+        species.totalProbability === null || species.totalProbability === undefined
+          ? 0
+          : Number(species.totalProbability);
+      if (Number.isFinite(totalProbability) && totalProbability > cumThreshold) return false;
+    }
     return true;
   });
   const dir = sortDir.value === "asc" ? 1 : -1;
@@ -542,11 +543,11 @@ watch(selectedTripId, () => {
             </button>
           </div>
 
-          <div class="bg-light rounded-3 p-3 d-flex flex-wrap align-items-start gap-3">
+          <div class="bg-light rounded-3 p-3 d-flex flex-wrap align-items-center gap-3">
             <div class="fw-semibold text-secondary small text-uppercase">Filters</div>
             <div
               class="d-flex align-items-center gap-2 flex-wrap"
-              v-if="hasLifeColumn || hasRegionColumn || hasTripReportColumn"
+              v-if="hasLifeColumn || hasRegionColumn || hasTripReportColumn || selectedVisitId"
             >
               <label class="form-check d-flex align-items-center gap-1 mb-0" v-if="hasLifeColumn">
                 <input
@@ -591,32 +592,40 @@ watch(selectedTripId, () => {
                 <span class="form-check-label small">Interest</span>
               </label>
             </div>
-            <div class="threshold-controls d-flex flex-column gap-2 flex-grow-1">
-              <div class="threshold-row d-flex align-items-center gap-2 flex-wrap">
-                <span class="fw-semibold small text-secondary threshold-label">Cum. Trip (max)</span>
-                <Slider
-                  v-model="cumulativeTripMax"
-                  :min="0"
-                  :max="1"
-                  :step="0.01"
-                  :lazy="true"
-                  :tooltip="'always'"
-                  :format="formatPercent"
-                  class="threshold-slider flex-grow-1"
+            <div class="d-flex align-items-center gap-3 flex-wrap filter-sliders">
+              <div
+                class="d-flex align-items-center gap-2 slider-inline"
+                :class="{ 'text-muted': !locationFiltersActive }"
+              >
+                <span class="small mb-0">Cum. Trip (max)</span>
+                <input
+                  type="range"
+                  class="form-range filter-range"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  v-model.number="cumulativeTripMax"
+                  :disabled="!locationFiltersActive"
+                  aria-label="Maximum cumulative trip probability"
                 />
+                <span class="small">{{ formatPercent(cumulativeTripMax) }}</span>
               </div>
-              <div class="threshold-row d-flex align-items-center gap-2 flex-wrap">
-                <span class="fw-semibold small text-secondary threshold-label">Location rate (min)</span>
-                <Slider
-                  v-model="locationMinRate"
-                  :min="0"
-                  :max="1"
-                  :step="0.01"
-                  :lazy="true"
-                  :tooltip="'always'"
-                  :format="formatPercent"
-                  class="threshold-slider flex-grow-1"
+              <div
+                class="d-flex align-items-center gap-2 slider-inline"
+                :class="{ 'text-muted': !locationFiltersActive }"
+              >
+                <span class="small mb-0">Location rate (min)</span>
+                <input
+                  type="range"
+                  class="form-range filter-range"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  v-model.number="locationMinRate"
+                  :disabled="!locationFiltersActive"
+                  aria-label="Minimum location rate"
                 />
+                <span class="small">{{ formatPercent(locationMinRate) }}</span>
               </div>
             </div>
           </div>
@@ -676,7 +685,7 @@ watch(selectedTripId, () => {
                       </button>
                     </div>
                   </th>
-                  <th class="text-end">
+                  <th class="text-end" v-if="locationFiltersActive">
                     <button
                       class="btn btn-link p-0 fw-semibold text-decoration-none text-reset"
                       @click="toggleSort('location')"
@@ -684,7 +693,7 @@ watch(selectedTripId, () => {
                       Location <i :class="[sortIcon('location'), 'ms-1']"></i>
                     </button>
                   </th>
-                  <th class="text-end">
+                  <th class="text-end" v-if="locationFiltersActive">
                     <button
                       class="btn btn-link p-0 fw-semibold text-decoration-none text-reset"
                       @click="toggleSort('rank')"
@@ -724,8 +733,8 @@ watch(selectedTripId, () => {
                   <td class="text-end">{{ formatRate(species.overallRate) }}</td>
                   <td class="text-end">{{ formatRate(species.avgRate) }}</td>
                   <td class="text-end">{{ formatPercent(species.totalProbability) }}</td>
-                  <td class="text-end">{{ formatRate(species.locationRate) }}</td>
-                  <td class="text-end">{{ species.locationRank ?? "-" }}</td>
+                  <td class="text-end" v-if="locationFiltersActive">{{ formatRate(species.locationRate) }}</td>
+                  <td class="text-end" v-if="locationFiltersActive">{{ species.locationRank ?? "-" }}</td>
                   <td class="text-center" v-if="selectedVisitId">
                     <input
                       class="form-check-input"
@@ -811,43 +820,21 @@ watch(selectedTripId, () => {
   justify-content: center;
   padding: 0;
 }
-
-.threshold-slider {
-  --slider-height: 4px;
-  --slider-connect-bg: #2a9d8f;
-  --slider-tooltip-bg: #2a9d8f;
-  --slider-tooltip-color: #ffffff;
-  --slider-handle-border: #2a9d8f;
-  padding: 6px 4px 2px;
+.filter-sliders {
   flex: 1;
+  min-width: 240px;
 }
 
-.threshold-slider :deep(.slider-base) {
-  background-color: #d6dbe1;
+.slider-inline {
+  align-items: center;
 }
 
-.threshold-slider :deep(.slider-connects) {
-  background-color: transparent;
+.filter-range {
+  width: 180px;
+  max-width: 220px;
 }
 
-.threshold-slider :deep(.slider-connect) {
-  background-color: #2a9d8f;
-}
-
-.threshold-slider :deep(.slider-tooltip) {
-  margin-top: -2px;
-}
-
-.threshold-controls {
-  width: 100%;
-}
-
-.threshold-row {
-  width: 100%;
-}
-
-.threshold-label {
-  min-width: 140px;
-  white-space: nowrap;
+.filter-sliders .text-muted {
+  opacity: 0.6;
 }
 </style>

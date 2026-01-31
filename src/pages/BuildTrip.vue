@@ -1760,11 +1760,12 @@ onBeforeUnmount(() => {
                   :close-on-select="false"
                   :clearable="false"
                   :searchable="true"
-                :disabled="visitForm.type !== 'birding'"
-                placeholder="Select species"
-                class="species-select"
-                @update:modelValue="saveTargetSpecies"
-              >
+                  :append-to-body="true"
+                  :disabled="visitForm.type !== 'birding'"
+                  placeholder="Select species"
+                  class="species-select"
+                  @update:modelValue="saveTargetSpecies"
+                >
                   <template #option="{ commonName, scientificName, code }">
                     <div class="d-flex flex-column">
                       <span class="fw-semibold small">{{ commonName || code }}</span>
@@ -1827,8 +1828,8 @@ onBeforeUnmount(() => {
 }
 
 .species-select :deep(.vs__selected-options) {
-  flex-wrap: nowrap;
-  overflow: hidden;
+  flex-wrap: wrap;
+  overflow: visible;
   gap: 4px;
 }
 
@@ -1836,7 +1837,7 @@ onBeforeUnmount(() => {
   margin: 0;
   padding: 2px 6px;
   font-size: 0.75rem;
-  white-space: nowrap;
+  white-space: normal;
 }
 
 .species-select :deep(.vs__search) {

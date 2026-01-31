@@ -34,8 +34,7 @@ const loadTrips = async () => {
   await refreshTrips();
 };
 
-const clearSelection = () => {
-  selectedTripId.value = "";
+const resetLocalState = () => {
   loadedTrip.value = null;
   processedData.value = null;
   saveStatus.value = "";
@@ -151,7 +150,7 @@ const handleSpeciesListUpdate = async (updatedList) => {
 
 const loadTripData = async (tripId) => {
   if (!tripId) {
-    clearSelection();
+    resetLocalState();
     return;
   }
   loadedTrip.value = await db.trips.get(tripId);
@@ -170,7 +169,7 @@ const loadTripData = async (tripId) => {
 watch(selectedTripId, loadTripData);
 
 onMounted(async () => {
-  clearSelection();
+  resetLocalState();
   await loadTrips();
 });
 
@@ -183,8 +182,8 @@ const deleteTrip = async () => {
   await db.trips.delete(tripId);
   await db.ebd.where("tripId").equals(tripId).delete();
   await db.visits.where("tripId").equals(tripId).delete();
+  resetLocalState();
   await loadTrips();
-  clearSelection();
   setSaveStatus("Trip deleted.");
 };
 
@@ -221,7 +220,7 @@ const syncTripReportSpecies = async () => {
   tripReportStatus.value = "";
   try {
     const response = await fetch(
-      "http://tripreport.raphaelnussbaumer.com/tripreport-internal/v1/taxon-list/" + tripReportId,
+      "https://tripreport.raphaelnussbaumer.com/tripreport-internal/v1/taxon-list/" + tripReportId,
     );
     if (!response.ok) throw new Error(`Trip report request failed: ${response.status}`);
     const payload = await response.json();
@@ -397,6 +396,32 @@ const importTrip = async (event) => {
 <template>
   <div class="row g-4 mt-1">
     <div class="col-lg-6">
+      <div class="card mb-3">
+        <div class="card-body">
+          <h5 class="card-title">Select active trip</h5>
+          <p class="text-muted small mb-2">
+            Pick the trip you want to edit and sync; this selection updates the header indicator.
+          </p>
+          <div v-if="trips.length">
+            <select
+              v-model="selectedTripId"
+              class="form-select"
+              aria-label="Select the trip you want to edit"
+            >
+              <option v-if="!trips.length" value="" disabled selected>Select a trip</option>
+              <option v-for="trip in trips" :key="trip.id" :value="trip.id">
+                {{ trip.name }}
+              </option>
+            </select>
+            <div class="form-text text-muted small mt-1">
+              Choosing a trip here updates the site-wide selection.
+            </div>
+          </div>
+          <div v-else class="text-muted small">
+            Create or import a trip below before selecting one here.
+          </div>
+        </div>
+      </div>
       <div class="card">
         <div class="card-body">
           <h5 class="card-title">Create new birding trip</h5>
@@ -421,12 +446,11 @@ const importTrip = async (event) => {
     <div class="col-lg-6">
       <div class="card">
         <div class="card-body">
+          <h5 class="card-title">Add trip details</h5>
+          <p class="text-muted small mb-1">
+            Update the trip name, refine the species list, and optionally sync an eBird trip report.
+          </p>
           <div v-if="selectedTripId">
-            <h5 class="card-title">Add trip details</h5>
-            <p class="text-muted small mb-1">
-              Update the trip name, refine the species list, and optionally sync an eBird trip
-              report.
-            </p>
             <div class="row g-3 align-items-center">
               <div class="col-md-3">
                 <label class="form-label">Trip name</label>
@@ -488,7 +512,9 @@ const importTrip = async (event) => {
             >
               <i class="bi bi-check-circle-fill me-2"></i>
               <div>
-                <div><strong>Synced:</strong> {{ formatSyncTimestamp(lastTripReportSyncTime) }}</div>
+                <div>
+                  <strong>Synced:</strong> {{ formatSyncTimestamp(lastTripReportSyncTime) }}
+                </div>
               </div>
             </div>
             <div class="d-flex flex-wrap align-items-center gap-2 mt-2">
@@ -511,7 +537,9 @@ const importTrip = async (event) => {
               Delete trip
             </button>
           </div>
-          <div v-else class="text-muted mt-3">Select a trip from the header to edit.</div>
+          <div v-else class="text-muted mt-3">
+            Select an active trip from the left card to edit its details.
+          </div>
         </div>
       </div>
     </div>
