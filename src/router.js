@@ -8,7 +8,7 @@ const routes = [
   { path: "/", redirect: "/create" },
   { path: "/create", component: CreateTrip },
   { path: "/buildTrip", component: BuildTrip, meta: { fullPage: true } },
-  { path: "/viewTrip", component: SpeciesList },
+  { path: "/speciesList", component: SpeciesList },
   { path: "/speciesMap", component: SpeciesMap, meta: { fullPage: true } },
 ];
 

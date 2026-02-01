@@ -48,6 +48,8 @@ const routeLoadingId = ref("");
 let routeRequestId = 0;
 const itineraryListRef = ref(null);
 const mapStyle = ref("mapbox://styles/mapbox/outdoors-v12");
+const pendingMapState = ref(null);
+const visitStatsTimers = new Map();
 const isSatellite = computed({
   get: () => mapStyle.value === "mapbox://styles/mapbox/satellite-streets-v12",
   set: (value) => {
@@ -58,6 +60,59 @@ const isSatellite = computed({
 });
 
 mapboxgl.accessToken = "pk.eyJ1IjoicmFmbnVzcyIsImEiOiIzMVE1dnc0In0.3FNMKIlQ_afYktqki-6m0g";
+
+const getMapStateKey = (tripId) => (tripId ? `buildTripMapState:${tripId}` : "");
+
+const normalizeMapStyle = (style) => {
+  if (style === "mapbox://styles/mapbox/satellite-streets-v12") return style;
+  if (style === "mapbox://styles/mapbox/outdoors-v12") return style;
+  return "";
+};
+
+const loadSavedMapState = (tripId) => {
+  const key = getMapStateKey(tripId);
+  if (!key) return null;
+  const raw = localStorage.getItem(key);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    const center = Array.isArray(parsed.center) ? parsed.center : null;
+    if (!center || center.length !== 2) return null;
+    const [lng, lat] = center.map((value) => Number(value));
+    if (!Number.isFinite(lng) || !Number.isFinite(lat)) return null;
+    const zoom = Number(parsed.zoom);
+    const bearing = Number(parsed.bearing);
+    const pitch = Number(parsed.pitch);
+    const style = normalizeMapStyle(parsed.style);
+    if (!Number.isFinite(zoom)) return null;
+    return {
+      style,
+      center: [lng, lat],
+      zoom,
+      bearing: Number.isFinite(bearing) ? bearing : 0,
+      pitch: Number.isFinite(pitch) ? pitch : 0,
+    };
+  } catch (error) {
+    console.warn("Could not restore map state", error);
+    return null;
+  }
+};
+
+const saveMapState = () => {
+  if (!map || !selectedTripId.value) return;
+  const key = getMapStateKey(selectedTripId.value);
+  if (!key) return;
+  const center = map.getCenter();
+  const payload = {
+    style: mapStyle.value,
+    center: [center.lng, center.lat],
+    zoom: map.getZoom(),
+    bearing: map.getBearing(),
+    pitch: map.getPitch(),
+  };
+  localStorage.setItem(key, JSON.stringify(payload));
+};
 
 const selectedTrip = computed(
   () => trips.value.find((trip) => trip.id === selectedTripId.value) || null,
@@ -89,6 +144,44 @@ const getVisitTypeLabel = (visit) => {
 };
 
 const tripSpeciesOptions = computed(() => tripData.value?.speciesList || []);
+const statsSourceUpdatedAt = computed(() => tripData.value?.updatedAt ?? null);
+
+const toNumber = (value, fallback = 0) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const distanceKm = (a, b) => {
+  const toRad = (deg) => (deg * Math.PI) / 180;
+  const lat1 = toRad(a[1]);
+  const lat2 = toRad(b[1]);
+  const dLat = lat2 - lat1;
+  const dLon = toRad(b[0] - a[0]);
+  const sinLat = Math.sin(dLat / 2);
+  const sinLon = Math.sin(dLon / 2);
+  const hav = sinLat * sinLat + Math.cos(lat1) * Math.cos(lat2) * sinLon * sinLon;
+  return 6371 * 2 * Math.asin(Math.min(1, Math.sqrt(hav)));
+};
+
+const locationMeta = computed(() => {
+  const base = locations.value || [];
+  return base
+    .map((location) => {
+      const lon = toNumber(location.longitude, NaN);
+      const lat = toNumber(location.latitude, NaN);
+      if (!Number.isFinite(lon) || !Number.isFinite(lat)) return null;
+      const entries = Array.isArray(location.species_checklist_counts)
+        ? location.species_checklist_counts
+        : [];
+      return {
+        lon,
+        lat,
+        checklistCount: toNumber(location.checklist_count, 0),
+        speciesEntries: entries,
+      };
+    })
+    .filter(Boolean);
+});
 
 const selectedVisitStats = computed(() => {
   const visit = selectedVisit.value;
@@ -121,6 +214,118 @@ const selectedVisitStats = computed(() => {
     locations: locationCount,
   };
 });
+
+const buildVisitStats = (visit) => {
+  const effort = Math.max(0, toNumber(visit?.durationMin, 1));
+  if (!visit || getVisitType(visit) !== "birding") {
+    return {
+      statsChecklistCount: 0,
+      statsLocationCount: 0,
+      statsSpeciesCounts: {},
+      statsEffort: effort,
+      statsSourceUpdatedAt: statsSourceUpdatedAt.value,
+      statsUpdatedAt: Date.now(),
+    };
+  }
+
+  const radiusKm = Math.max(0, toNumber(visit.radiusKm, 0));
+  const centerLon = toNumber(visit.longitude, NaN);
+  const centerLat = toNumber(visit.latitude, NaN);
+  if (!Number.isFinite(centerLon) || !Number.isFinite(centerLat) || radiusKm <= 0) {
+    return {
+      statsChecklistCount: 0,
+      statsLocationCount: 0,
+      statsSpeciesCounts: {},
+      statsEffort: effort,
+      statsSourceUpdatedAt: statsSourceUpdatedAt.value,
+      statsUpdatedAt: Date.now(),
+    };
+  }
+
+  const latRange = radiusKm / 111;
+  const centerLatRad = (centerLat * Math.PI) / 180;
+  const cosLat = Math.cos(centerLatRad);
+  const lonRange = radiusKm / (111 * Math.max(cosLat, 0.2));
+  const speciesCounts = {};
+  let checklistCount = 0;
+  let locationCount = 0;
+
+  locationMeta.value.forEach((location) => {
+    const locLon = location.lon;
+    const locLat = location.lat;
+    if (Math.abs(locLat - centerLat) > latRange) return;
+    if (Math.abs(locLon - centerLon) > lonRange) return;
+    if (distanceKm([centerLon, centerLat], [locLon, locLat]) > radiusKm) return;
+
+    locationCount += 1;
+    checklistCount += location.checklistCount;
+    location.speciesEntries.forEach(([code, count]) => {
+      const safeCount = toNumber(count, 0);
+      if (!code) return;
+      speciesCounts[code] = (speciesCounts[code] || 0) + safeCount;
+    });
+  });
+
+  return {
+    statsChecklistCount: checklistCount,
+    statsLocationCount: locationCount,
+    statsSpeciesCounts: speciesCounts,
+    statsEffort: effort,
+    statsSourceUpdatedAt: statsSourceUpdatedAt.value,
+    statsUpdatedAt: Date.now(),
+  };
+};
+
+const hasStatRelevantChange = (current, updates) => {
+  if (!current || !updates) return false;
+  if (Object.prototype.hasOwnProperty.call(updates, "type")) {
+    if ((updates.type || "birding") !== getVisitType(current)) return true;
+  }
+  if (Object.prototype.hasOwnProperty.call(updates, "latitude")) {
+    if (Number(updates.latitude) !== Number(current.latitude)) return true;
+  }
+  if (Object.prototype.hasOwnProperty.call(updates, "longitude")) {
+    if (Number(updates.longitude) !== Number(current.longitude)) return true;
+  }
+  if (Object.prototype.hasOwnProperty.call(updates, "radiusKm")) {
+    if (Number(updates.radiusKm) !== Number(current.radiusKm)) return true;
+  }
+  if (Object.prototype.hasOwnProperty.call(updates, "durationMin")) {
+    if (Number(updates.durationMin) !== Number(current.durationMin)) return true;
+  }
+  return false;
+};
+
+const scheduleVisitStats = (visitId) => {
+  if (!visitId) return;
+  const key = String(visitId);
+  if (visitStatsTimers.has(key)) {
+    clearTimeout(visitStatsTimers.get(key));
+  }
+  const timer = setTimeout(async () => {
+    visitStatsTimers.delete(key);
+    const visit = visits.value.find((item) => String(item.id) === key);
+    if (!visit) return;
+    if (!statsSourceUpdatedAt.value) return;
+    const stats = buildVisitStats(visit);
+    await applyVisitUpdates(visit.id, stats, { skipStats: true });
+  }, 600);
+  visitStatsTimers.set(key, timer);
+};
+
+const queueMissingVisitStats = () => {
+  if (!statsSourceUpdatedAt.value) return;
+  visits.value.forEach((visit) => {
+    const hasCounts =
+      visit.statsSpeciesCounts &&
+      typeof visit.statsSpeciesCounts === "object" &&
+      Object.keys(visit.statsSpeciesCounts).length >= 0;
+    const isFresh = visit.statsSourceUpdatedAt === statsSourceUpdatedAt.value;
+    if (!hasCounts || !isFresh) {
+      scheduleVisitStats(visit.id);
+    }
+  });
+};
 
 const formatVisitDate = (value) => {
   if (!value) return "No date";
@@ -764,6 +969,7 @@ const loadVisits = async (tripId) => {
   refreshRouteSource();
   syncVisitForm();
   scrollToSelectedVisit();
+  queueMissingVisitStats();
 };
 
 const loadTripData = async (tripId) => {
@@ -812,13 +1018,18 @@ const syncVisitForm = () => {
 };
 
 const applyVisitUpdates = async (visitId, updates, options = {}) => {
-  await db.visits.update(visitId, updates);
   const index = visits.value.findIndex((item) => String(item.id) === String(visitId));
+  const current = index >= 0 ? visits.value[index] : null;
+  const needsStats = !options.skipStats && hasStatRelevantChange(current, updates);
+  await db.visits.update(visitId, updates);
   if (index >= 0) {
     visits.value[index] = { ...visits.value[index], ...updates };
   }
   if (options.syncForm) {
     syncVisitForm();
+  }
+  if (needsStats) {
+    scheduleVisitStats(visitId);
   }
 };
 
@@ -1180,6 +1391,7 @@ const handleMapClick = async (event) => {
   await loadVisits(selectedTripId.value);
   selectedVisitId.value = id;
   nameNeedsUpdate.value = false;
+  scheduleVisitStats(id);
   const sorted = getSortedVisits();
   const newIndex = sorted.findIndex((visit) => String(visit.id) === String(id));
   const nextVisitId = newIndex >= 0 ? sorted[newIndex + 1]?.id || "" : "";
@@ -1482,11 +1694,14 @@ const setupMapLayers = () => {
 
 const initMap = () => {
   if (!mapContainer.value || map) return;
+  const initialState = pendingMapState.value;
   map = new mapboxgl.Map({
     container: mapContainer.value,
     style: mapStyle.value,
-    center: [0, 0],
-    zoom: 1.2,
+    center: initialState?.center || [0, 0],
+    zoom: Number.isFinite(initialState?.zoom) ? initialState.zoom : 1.2,
+    bearing: Number.isFinite(initialState?.bearing) ? initialState.bearing : 0,
+    pitch: Number.isFinite(initialState?.pitch) ? initialState.pitch : 0,
   });
 
   map.addControl(new mapboxgl.NavigationControl());
@@ -1494,6 +1709,15 @@ const initMap = () => {
   map.on("load", () => {
     mapLoaded = true;
     setupMapLayers();
+    if (initialState) {
+      map.jumpTo({
+        center: initialState.center,
+        zoom: initialState.zoom,
+        bearing: initialState.bearing,
+        pitch: initialState.pitch,
+      });
+      pendingMapState.value = null;
+    }
   });
 };
 
@@ -1540,6 +1764,13 @@ watch(mapStyle, (style) => {
 
 onMounted(async () => {
   await refreshTrips();
+  if (selectedTripId.value) {
+    const restored = loadSavedMapState(selectedTripId.value);
+    if (restored?.style) {
+      mapStyle.value = restored.style;
+    }
+    pendingMapState.value = restored;
+  }
   if (selectedTripId.value && !tripData.value) {
     await loadTripData(selectedTripId.value);
   }
@@ -1548,6 +1779,9 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  visitStatsTimers.forEach((timer) => clearTimeout(timer));
+  visitStatsTimers.clear();
+  saveMapState();
   window.removeEventListener("keydown", handleKeydown);
 });
 </script>

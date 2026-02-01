@@ -54,6 +54,16 @@ const toNumber = (value, fallback = 0) => {
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
+const toSpeciesCountsMap = (counts) => {
+  const map = new Map();
+  if (!counts || typeof counts !== "object") return map;
+  Object.entries(counts).forEach(([code, count]) => {
+    if (!code) return;
+    map.set(code, toNumber(count, 0));
+  });
+  return map;
+};
+
 const distanceKm = (a, b) => {
   const toRad = (deg) => (deg * Math.PI) / 180;
   const lat1 = toRad(a[1]);
@@ -107,52 +117,15 @@ const loadTripData = async (tripId) => {
 const visitsWithStats = computed(() => {
   const birdingVisits = visits.value.filter((visit) => (visit.type || "birding") === "birding");
   if (!birdingVisits.length) return [];
-  const baseLocations = locationMeta.value;
   return birdingVisits
     .map((visit) => {
-      const radiusKm = toNumber(visit.radiusKm, 0);
-      const centerLon = toNumber(visit.longitude, NaN);
-      const centerLat = toNumber(visit.latitude, NaN);
-      const center = [centerLon, centerLat];
-      if (!Number.isFinite(centerLon) || !Number.isFinite(centerLat)) {
-        return {
-          ...visit,
-          radiusKm,
-          effort: Math.max(0, toNumber(visit.durationMin, 1)),
-          checklistCount: 0,
-          locationCount: 0,
-          speciesCounts: new Map(),
-        };
-      }
-      const latRange = radiusKm / 111;
-      const centerLatRad = (centerLat * Math.PI) / 180;
-      const cosLat = Math.cos(centerLatRad);
-      const lonRange = radiusKm / (111 * Math.max(cosLat, 0.2));
-      const speciesCounts = new Map();
-      let checklistCount = 0;
-      let locationCount = 0;
-
-      baseLocations.forEach((location) => {
-        const locLon = location.lon;
-        const locLat = location.lat;
-        if (Math.abs(locLat - centerLat) > latRange) return;
-        if (Math.abs(locLon - centerLon) > lonRange) return;
-        if (distanceKm(center, [locLon, locLat]) > radiusKm) return;
-
-        locationCount += 1;
-        checklistCount += location.checklistCount;
-        location.speciesEntries.forEach(([code, count]) => {
-          speciesCounts.set(code, (speciesCounts.get(code) || 0) + toNumber(count, 0));
-        });
-      });
-
       return {
         ...visit,
-        radiusKm,
+        radiusKm: toNumber(visit.radiusKm, 0),
         effort: Math.max(0, toNumber(visit.durationMin, 1)),
-        checklistCount,
-        locationCount,
-        speciesCounts,
+        checklistCount: toNumber(visit.statsChecklistCount, 0),
+        locationCount: toNumber(visit.statsLocationCount, 0),
+        speciesCounts: toSpeciesCountsMap(visit.statsSpeciesCounts),
       };
     })
     .sort((a, b) => {
@@ -312,9 +285,7 @@ const visitOptions = computed(() =>
 );
 
 const selectedVisitIndex = computed(() =>
-  visitsWithStats.value.findIndex(
-    (visit) => String(visit.id) === String(selectedVisitId.value),
-  ),
+  visitsWithStats.value.findIndex((visit) => String(visit.id) === String(selectedVisitId.value)),
 );
 
 const goPrevVisit = () => {
@@ -501,7 +472,7 @@ watch(selectedTripId, () => {
 </script>
 
 <template>
-  <div class="row g-4">
+  <div class="row g-4 mt-1">
     <div class="col-12" v-if="trip">
       <div class="card">
         <div class="card-body">
@@ -579,10 +550,7 @@ watch(selectedTripId, () => {
                 />
                 <span class="form-check-label small">Trip</span>
               </label>
-              <label
-                class="form-check d-flex align-items-center gap-1 mb-0"
-                v-if="selectedVisitId"
-              >
+              <label class="form-check d-flex align-items-center gap-1 mb-0" v-if="selectedVisitId">
                 <input
                   id="filterInterest"
                   class="form-check-input"
@@ -733,8 +701,12 @@ watch(selectedTripId, () => {
                   <td class="text-end">{{ formatRate(species.overallRate) }}</td>
                   <td class="text-end">{{ formatRate(species.avgRate) }}</td>
                   <td class="text-end">{{ formatPercent(species.totalProbability) }}</td>
-                  <td class="text-end" v-if="locationFiltersActive">{{ formatRate(species.locationRate) }}</td>
-                  <td class="text-end" v-if="locationFiltersActive">{{ species.locationRank ?? "-" }}</td>
+                  <td class="text-end" v-if="locationFiltersActive">
+                    {{ formatRate(species.locationRate) }}
+                  </td>
+                  <td class="text-end" v-if="locationFiltersActive">
+                    {{ species.locationRank ?? "-" }}
+                  </td>
                   <td class="text-center" v-if="selectedVisitId">
                     <input
                       class="form-check-input"
@@ -832,6 +804,27 @@ watch(selectedTripId, () => {
 .filter-range {
   width: 180px;
   max-width: 220px;
+  height: 6px;
+}
+
+.filter-range::-webkit-slider-runnable-track {
+  height: 6px;
+  background: #b9c0c8;
+  border-radius: 999px;
+}
+
+.filter-range::-moz-range-track {
+  height: 6px;
+  background: #b9c0c8;
+  border-radius: 999px;
+}
+
+.filter-range:disabled::-webkit-slider-runnable-track {
+  background: #d7dde3;
+}
+
+.filter-range:disabled::-moz-range-track {
+  background: #d7dde3;
 }
 
 .filter-sliders .text-muted {

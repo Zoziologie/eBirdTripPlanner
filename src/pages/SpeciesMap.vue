@@ -24,6 +24,7 @@ const clusteredLocations = ref([]);
 const clusterSpeciesCounts = ref(new Map());
 
 const selectedSpeciesCode = ref("");
+const isMobilePanelOpen = ref(false);
 
 const mapContainer = ref(null);
 let map = null;
@@ -635,6 +636,14 @@ const updateSelectedSpecies = (value) => {
   selectedSpeciesCode.value = value || "";
 };
 
+const openMobilePanel = () => {
+  isMobilePanelOpen.value = true;
+};
+
+const closeMobilePanel = () => {
+  isMobilePanelOpen.value = false;
+};
+
 const updateMapData = () => {
   if (!map || !mapLoaded || !map.getSource("clusters")) return;
 
@@ -734,61 +743,72 @@ onMounted(async () => {
       class="species-map-canvas position-absolute top-0 bottom-0 start-0 end-0 w-100 h-100 overflow-hidden"
     ></div>
     <div
-      class="species-search-float position-absolute top-0 start-50 translate-middle-x w-100 px-3 pt-3 d-flex flex-column align-items-stretch pe-auto"
-      v-if="tripData"
-      style="max-width: 520px; z-index: 4"
+      class="position-absolute top-0 start-0 d-sm-none pe-auto"
+      v-if="tripData && !isMobilePanelOpen"
+      style="z-index: 4"
     >
-      <div class="w-100">
-        <v-select
-          v-model="selectedSpeciesCode"
-          :options="speciesList"
-          label="commonName"
-          :reduce="(species) => species.code"
-          :clearable="true"
-          :searchable="true"
-          placeholder="Search species"
-          class="species-select"
-          @update:modelValue="updateSelectedSpecies"
-        >
-          <template #option="{ commonName, scientificName, code }">
-            <div class="d-flex flex-column">
-              <span class="fw-semibold">{{ commonName || code }}</span>
-              <span class="text-muted small" v-if="scientificName">
-                {{ scientificName }} · {{ code }}
-              </span>
-            </div>
-          </template>
-          <template #selected-option="{ commonName, code }">
-            <span class="small">{{ commonName || code }}</span>
-          </template>
-        </v-select>
-      </div>
+      <button class="btn btn-light shadow-sm m-0 m-sm-3" type="button" @click="openMobilePanel">
+        <i class="bi bi-sliders"></i>
+        <span class="visually-hidden">Open species map panel</span>
+      </button>
     </div>
 
     <div
-      class="species-map-overlay position-absolute top-0 start-0 m-3 d-flex gap-3 pe-none"
+      class="species-map-overlay position-absolute top-0 start-0 m-0 m-sm-3 d-flex gap-3 pe-none"
       style="z-index: 3"
     >
-      <div
-        class="d-flex flex-column gap-3 pe-auto"
-        style="width: 360px; max-width: calc(100vw - 32px)"
-      >
+      <div class="species-map-panel flex-column gap-3 pe-auto" :class="{ 'is-open': isMobilePanelOpen }">
         <div class="card shadow-sm" v-if="tripData">
           <div class="card-body">
-            <div class="d-flex align-items-center justify-content-between mb-1">
+            <div class="d-flex align-items-center justify-content-between mb-1 gap-2">
               <div class="fw-semibold">Species map</div>
-              <div class="form-check form-switch mb-0">
-                <input
-                  id="satelliteToggleSpecies"
-                  class="form-check-input"
-                  type="checkbox"
-                  v-model="isSatellite"
-                />
-                <label class="form-check-label small" for="satelliteToggleSpecies">Hybrid</label>
+              <div class="d-flex align-items-center gap-2">
+                <div class="form-check form-switch mb-0">
+                  <input
+                    id="satelliteToggleSpecies"
+                    class="form-check-input"
+                    type="checkbox"
+                    v-model="isSatellite"
+                  />
+                  <label class="form-check-label small" for="satelliteToggleSpecies">Hybrid</label>
+                </div>
+                <button
+                  class="btn btn-sm btn-outline-secondary d-sm-none"
+                  type="button"
+                  aria-label="Close species map panel"
+                  @click="closeMobilePanel"
+                >
+                  <i class="bi bi-x-lg"></i>
+                </button>
               </div>
             </div>
             <div class="text-muted small mb-2">
               Map reporting rate by species using complete checklists and aggregated locations.
+            </div>
+            <div class="mb-2">
+              <v-select
+                v-model="selectedSpeciesCode"
+                :options="speciesList"
+                label="commonName"
+                :reduce="(species) => species.code"
+                :clearable="true"
+                :searchable="true"
+                placeholder="Search species"
+                class="species-select"
+                @update:modelValue="updateSelectedSpecies"
+              >
+                <template #option="{ commonName, scientificName, code }">
+                  <div class="d-flex flex-column">
+                    <span class="fw-semibold">{{ commonName || code }}</span>
+                    <span class="text-muted small" v-if="scientificName">
+                      {{ scientificName }} · {{ code }}
+                    </span>
+                  </div>
+                </template>
+                <template #selected-option="{ commonName, code }">
+                  <span class="small">{{ commonName || code }}</span>
+                </template>
+              </v-select>
             </div>
             <div class="trip-summary text-muted small mb-2" v-if="tripData">
               {{ speciesCount }} species · {{ checklistCount }} checklists ·
@@ -847,19 +867,17 @@ onMounted(async () => {
                 </div>
               </div>
             </div>
-            <hr class="my-2" />
-            <div class="fw-semibold small mb-1">Export sightings</div>
-            <div class="text-muted small mb-2">
-              Export KML for the selected species to view checklists in other apps.
+            <div v-if="selectedSpeciesCode">
+              <hr class="my-2" />
+              <div class="fw-semibold small mb-1">Export sightings</div>
+              <div class="text-muted small mb-2">
+                Export KML for the selected species to view checklists in other apps.
+              </div>
+              <button class="btn btn-outline-secondary w-100" @click="exportKml">
+                <i class="bi bi-download me-1"></i>
+                Export KML
+              </button>
             </div>
-            <button
-              class="btn btn-outline-secondary w-100"
-              @click="exportKml"
-              :disabled="!selectedSpeciesCode"
-            >
-              <i class="bi bi-download me-1"></i>
-              Export KML
-            </button>
           </div>
         </div>
 
@@ -909,6 +927,42 @@ onMounted(async () => {
 
 .species-select :deep(.vs__dropdown-menu) {
   max-height: 240px;
+}
+
+.species-map-panel {
+  display: flex;
+  width: 360px;
+  max-width: calc(100vw - 32px);
+}
+
+@media (max-width: 575.98px) {
+  .species-map-overlay {
+    position: absolute !important;
+    inset: 0;
+    margin: 0 !important;
+  }
+
+  .species-map-panel {
+    display: none !important;
+    width: 100%;
+    max-width: none;
+    height: 100%;
+  }
+
+  .species-map-panel.is-open {
+    display: flex !important;
+  }
+
+  .species-map-panel.is-open .card,
+  .species-map-panel.is-open .alert {
+    height: 100%;
+    border-radius: 0;
+  }
+
+  .species-map-panel.is-open .card-body,
+  .species-map-panel.is-open .alert {
+    overflow-y: auto;
+  }
 }
 
 .legend-gradient {
@@ -966,16 +1020,6 @@ onMounted(async () => {
   .species-map-canvas {
     position: relative !important;
     height: 420px;
-  }
-  .species-map-overlay {
-    position: static !important;
-    flex-direction: column;
-    margin: 0 !important;
-  }
-  .species-search-float {
-    position: static !important;
-    transform: none !important;
-    max-width: 100% !important;
   }
 }
 </style>

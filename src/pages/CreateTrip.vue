@@ -19,6 +19,29 @@ const transferStatus = ref("");
 const statusMessage = computed(() => transferStatus.value || saveStatus.value);
 const isSyncingTripReport = ref(false);
 const tripReportStatus = ref("");
+const tripReportAlertMessage = computed(() => {
+  if (tripReportStatus.value) return tripReportStatus.value;
+  if (lastTripReportSyncTime.value) return "Trip report species synced.";
+  return "";
+});
+const tripReportAlertVariant = computed(() => {
+  const text = (tripReportStatus.value || "").toLowerCase();
+  if (text.includes("failed") || text.includes("error")) return "danger";
+  if (text.includes("load")) return "warning";
+  if (tripReportStatus.value) return "info";
+  if (lastTripReportSyncTime.value) return "success";
+  return "info";
+});
+const tripReportAlertIcon = computed(() => {
+  const variant = tripReportAlertVariant.value;
+  if (variant === "success") return "bi-check-circle-fill";
+  if (variant === "danger") return "bi-exclamation-triangle-fill";
+  if (variant === "warning") return "bi-exclamation-triangle-fill";
+  return "bi-info-circle-fill";
+});
+const showLastSyncLabel = computed(
+  () => tripReportAlertVariant.value === "success" && lastTripReportSyncTime.value,
+);
 const lastTripReportSyncTime = ref(null);
 
 const formatSyncTimestamp = (value) => {
@@ -166,7 +189,7 @@ const loadTripData = async (tripId) => {
   saveStatus.value = "";
 };
 
-watch(selectedTripId, loadTripData);
+watch(selectedTripId, loadTripData, { immediate: true });
 
 onMounted(async () => {
   resetLocalState();
@@ -297,7 +320,7 @@ const syncTripReportSpecies = async () => {
     });
     await db.trips.update(selectedTripId.value, { tripReportSyncedAt: syncTimestamp });
     lastTripReportSyncTime.value = syncTimestamp;
-    tripReportStatus.value = "";
+    tripReportStatus.value = "Trip report species synced.";
   } catch (error) {
     tripReportStatus.value = `Trip report sync failed: ${error.message || error}`;
   } finally {
@@ -507,18 +530,17 @@ const importTrip = async (event) => {
               </button>
             </div>
             <div
-              v-if="lastTripReportSyncTime"
-              class="alert alert-success py-1 px-2 mt-2 mb-0 small d-flex align-items-center"
+              v-if="tripReportAlertMessage"
+              class="alert py-2 px-3 mt-2 mb-0 small d-flex align-items-center"
+              :class="`alert-${tripReportAlertVariant}`"
             >
-              <i class="bi bi-check-circle-fill me-2"></i>
+              <i class="bi me-2" :class="tripReportAlertIcon"></i>
               <div>
-                <div>
-                  <strong>Synced:</strong> {{ formatSyncTimestamp(lastTripReportSyncTime) }}
+                <div>{{ tripReportAlertMessage }}</div>
+                <div class="text-muted small" v-if="showLastSyncLabel">
+                  Last synced: {{ formatSyncTimestamp(lastTripReportSyncTime) }}
                 </div>
               </div>
-            </div>
-            <div class="d-flex flex-wrap align-items-center gap-2 mt-2">
-              <span class="small text-muted" v-if="tripReportStatus">{{ tripReportStatus }}</span>
             </div>
             <hr />
             <p class="text-muted small mb-2">
