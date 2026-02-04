@@ -278,6 +278,12 @@ const buildSpeciesTable = (entries, selectedCode) => {
 
 const buildPopupHtml = (location) => {
   const hotspot = location.hotspot;
+  const lat = Number(location.latitude);
+  const lon = Number(location.longitude);
+  const googleMapsUrl =
+    Number.isFinite(lat) && Number.isFinite(lon)
+      ? `https://www.google.com/maps/search/?api=1&query=${lat},${lon}`
+      : "";
   const localityLabel = hotspot?.id
     ? `<a href="https://ebird.org/hotspot/${hotspot.id}" target="_blank">${escapeHtml(
         hotspot.name,
@@ -300,24 +306,18 @@ const buildPopupHtml = (location) => {
     location.location_count && location.location_count > 0
       ? `${location.location_count} location${location.location_count === 1 ? "" : "s"}`
       : "";
+  const summaryParts = [locationCountLabel, checklistLabel, speciesLabel].filter(Boolean);
+  const summaryLine = summaryParts.length ? summaryParts.join(" · ") : "";
   return `
     <div class="species-popup">
-      <div class="fw-semibold mb-1 species-popup-title">${localityLabel}</div>
-      <div class="d-flex flex-wrap gap-2 mb-2">
-        ${
-          locationCountLabel
-            ? `<span class="badge rounded-pill text-bg-light border">
-          <i class="bi bi-geo-alt me-1"></i>${escapeHtml(locationCountLabel)}
-        </span>`
+      <div class="fw-semibold mb-1 species-popup-title">
+        ${localityLabel}${
+          googleMapsUrl
+            ? ` <a href="${googleMapsUrl}" target="_blank" rel="noopener" class="text-decoration-none" title="Open in Google Maps"><i class="bi bi-geo-alt"></i></a>`
             : ""
         }
-        <span class="badge rounded-pill text-bg-light border">
-          <i class="bi bi-clipboard-check me-1"></i>${escapeHtml(checklistLabel)}
-        </span>
-        <span class="badge rounded-pill text-bg-light border">
-          <i class="bi bi-feather me-1"></i>${escapeHtml(speciesLabel)}
-        </span>
       </div>
+      ${summaryLine ? `<div class="text-muted small mb-2">${escapeHtml(summaryLine)}</div>` : ""}
       ${speciesTable}
     </div>
   `;
@@ -588,7 +588,12 @@ const handleClusterLeave = () => {
   map.getCanvas().style.cursor = "";
 };
 
-const handleMapClick = () => {
+const handleMapClick = (event) => {
+  if (!map) return;
+  const clickedCluster =
+    event?.point &&
+    map.queryRenderedFeatures(event.point, { layers: ["clusters-circle"] }).length > 0;
+  if (clickedCluster) return;
   if (popup) {
     popup.remove();
     popup = null;
@@ -620,7 +625,7 @@ const fitMapToClusters = () => {
   const points = clusteredLocations.value;
   if (!points.length) return;
   if (points.length === 1) {
-    map.flyTo({
+    map.jumpTo({
       center: [points[0].longitude, points[0].latitude],
       zoom: 12,
     });
@@ -631,7 +636,7 @@ const fitMapToClusters = () => {
     bounds.extend([location.longitude, location.latitude]);
   });
   try {
-    map.fitBounds(bounds, { padding: 50, maxZoom: 15 });
+    map.fitBounds(bounds, { padding: 50, maxZoom: 15, duration: 0 });
   } catch (error) {
     console.warn("Could not fit bounds", error);
   }
@@ -752,7 +757,7 @@ onMounted(async () => {
       v-if="tripData && !isMobilePanelOpen"
       style="z-index: 4"
     >
-      <button class="btn btn-light shadow-sm m-0 m-sm-3" type="button" @click="openMobilePanel">
+      <button class="btn btn-light shadow-sm m-2 m-sm-3" type="button" @click="openMobilePanel">
         <i class="bi bi-sliders"></i>
         <span class="visually-hidden">Open species map panel</span>
       </button>

@@ -54,6 +54,7 @@ const visitStatsTimers = new Map();
 const isMobilePanelOpen = ref(false);
 const itinerarySplitPercent = ref(60);
 const isDraggingSplit = ref(false);
+let geolocateControl = null;
 const isSatellite = computed({
   get: () => mapStyle.value === "mapbox://styles/mapbox/satellite-streets-v12",
   set: (value) => {
@@ -492,6 +493,16 @@ const handleTripLocationsEnter = (event) => {
   const coords = feature.geometry.coordinates.slice();
   const location = locations.value.find((item) => String(item.locality_id) === String(locality_id));
   const locationUrl = getEbirdLocationUrl(location);
+  const googleMapsUrl = getGoogleMapsUrl(location);
+  const checklistTotal =
+    location?.checklist?.length ??
+    (location?.checklist_count_complete !== undefined ||
+    location?.checklist_count_incomplete !== undefined
+      ? (location?.checklist_count_complete ?? 0) +
+        (location?.checklist_count_incomplete ?? 0)
+      : undefined) ??
+    checklist_count ??
+    0;
   const checklistLinks = (location?.checklist || [])
     .map((entry) => entry?.checklist_id)
     .filter(Boolean)
@@ -516,8 +527,12 @@ const handleTripLocationsEnter = (event) => {
         locationUrl
           ? `<a href="${locationUrl}" target="_blank" rel="noopener">${locality}</a>`
           : locality
+      }${
+        googleMapsUrl
+          ? ` <a href="${googleMapsUrl}" target="_blank" rel="noopener" class="ms-1 text-decoration-none" title="Open in Google Maps"><i class="bi bi-geo-alt"></i></a>`
+          : ""
       }</strong></div>` +
-        `<div>${species_count} species · ${checklist_count} checklists</div>` +
+        `<div>${species_count} species · ${checklistTotal} checklists</div>` +
         (checklistLinks.length
           ? `<div class="mt-1"><strong>Checklists</strong><div>${checklistLinks.join(
               "<br />",
@@ -633,11 +648,15 @@ const getEbirdChecklistUrl = (checklistId) => {
 
 const getEbirdLocationUrl = (location) => {
   const localityId = location?.locality_id;
-  if (!localityId) return "";
-  const base = location?.locality_hotspot
-    ? "https://ebird.org/hotspot/"
-    : "https://ebird.org/location/";
-  return `${base}${localityId}`;
+  if (!localityId || !location?.locality_hotspot) return "";
+  return `https://ebird.org/hotspot/${localityId}`;
+};
+
+const getGoogleMapsUrl = (location) => {
+  const lat = Number(location?.latitude);
+  const lon = Number(location?.longitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return "";
+  return `https://www.google.com/maps/search/?api=1&query=${lat},${lon}`;
 };
 
 const formatRouteSummary = (distanceM, durationS) => {
@@ -1482,6 +1501,7 @@ const updateMapData = () => {
       species_count: location.species_checklist_counts?.length || 0,
       checklist_count: location.checklist_count || 0,
       locality_id: location.locality_id || "",
+      locality_hotspot: location.locality_hotspot === true,
     },
   }));
 
@@ -1617,7 +1637,12 @@ const setupMapLayers = () => {
     source: "trip-locations",
     paint: {
       "circle-radius": ["interpolate", ["linear"], ["get", "checklist_count"], 1, 3, 50, 8],
-      "circle-color": "#ffd166",
+      "circle-color": [
+        "case",
+        ["boolean", ["get", "locality_hotspot"], false],
+        "#f4a261",
+        "#ffd166",
+      ],
       "circle-opacity": 0.85,
       "circle-stroke-color": "#1b1f24",
       "circle-stroke-width": 1,
@@ -1755,6 +1780,18 @@ const initMap = () => {
   });
 
   map.addControl(new mapboxgl.NavigationControl());
+  geolocateControl = new mapboxgl.GeolocateControl({
+    positionOptions: { enableHighAccuracy: true },
+    trackUserLocation: false,
+    showUserHeading: true,
+    showUserLocation: true,
+  });
+  map.addControl(geolocateControl, "top-right");
+  geolocateControl.on("geolocate", (event) => {
+    const { longitude, latitude } = event?.coords || {};
+    if (!Number.isFinite(longitude) || !Number.isFinite(latitude)) return;
+    map.easeTo({ center: [longitude, latitude] });
+  });
 
   map.on("load", () => {
     mapLoaded = true;
@@ -1858,7 +1895,7 @@ onBeforeUnmount(() => {
                   type="checkbox"
                   v-model="isSatellite"
                 />
-                <label class="form-check-label small" for="satelliteToggleBuild">Hybrid</label>
+                <label class="form-check-label small" for="satelliteToggleBuild">Hybrid map</label>
               </div>
               <button
                 class="btn btn-outline-secondary btn-sm"
@@ -1866,7 +1903,7 @@ onBeforeUnmount(() => {
                 :disabled="!selectedTripId || !visits.length"
               >
                 <i class="bi bi-download"></i>
-                <span class="ms-1">Export</span>
+                <span class="ms-1 d-none d-md-inline">Export</span>
               </button>
               <button
                 class="btn btn-outline-secondary btn-sm"
@@ -1874,7 +1911,7 @@ onBeforeUnmount(() => {
                 :disabled="!selectedTripId"
               >
                 <i class="bi bi-upload"></i>
-                <span class="ms-1">Import</span>
+                <span class="ms-1 d-none d-md-inline">Import</span>
               </button>
               <button
                 class="btn btn-outline-secondary btn-sm d-lg-none"
@@ -1958,140 +1995,146 @@ onBeforeUnmount(() => {
               role="separator"
               aria-label="Resize itinerary panels"
               @pointerdown="startSplitDrag"
-            ></div>
+            >
+              <i class="bi bi-grip-horizontal" aria-hidden="true"></i>
+            </div>
             <transition name="slide">
               <div v-if="selectedVisit" class="build-trip-edit bg-white shadow-sm">
-              <div class="d-flex align-items-center justify-content-between gap-2 mb-2">
-                <div class="fw-semibold small text-dark">Edit visit</div>
-                <div class="d-inline-flex align-items-center gap-2">
-                  <button
-                    class="btn btn-outline-primary btn-sm"
-                    @click="startAddVisit"
-                    :disabled="!selectedTripId"
-                  >
-                    <i :class="addingVisit ? 'bi bi-x-lg' : 'bi bi-plus-lg'"></i>
-                    <span class="ms-1">{{ addingVisit ? "Cancel" : "Add" }}</span>
-                  </button>
-                  <button
-                    class="btn btn-outline-danger btn-sm"
-                    @click="deleteVisit"
-                    :disabled="!selectedVisit"
-                  >
-                    <i class="bi bi-trash3"></i>
-                  </button>
-                </div>
-              </div>
-              <div class="mb-2">
-                <div class="d-flex align-items-center gap-2">
-                  <label class="form-label mb-0">Name</label>
-                  <div class="input-group">
-                    <input v-model="visitForm.name" class="form-control" @input="handleNameInput" />
+                <div class="d-flex align-items-center justify-content-between gap-2 mb-2">
+                  <div class="fw-semibold small text-dark">Edit visit</div>
+                  <div class="d-inline-flex align-items-center gap-2">
                     <button
-                      v-if="nameNeedsUpdate"
-                      class="btn btn-outline-secondary"
-                      type="button"
-                      @click="updateVisitNameFromLocation"
-                      :disabled="!selectedVisit"
-                      aria-label="Update name from location"
+                      class="btn btn-outline-primary btn-sm"
+                      @click="startAddVisit"
+                      :disabled="!selectedTripId"
                     >
-                      <i class="bi bi-arrow-clockwise"></i>
+                      <i :class="addingVisit ? 'bi bi-x-lg' : 'bi bi-plus-lg'"></i>
+                      <span class="ms-1">{{ addingVisit ? "Cancel" : "Add" }}</span>
+                    </button>
+                    <button
+                      class="btn btn-outline-danger btn-sm"
+                      @click="deleteVisit"
+                      :disabled="!selectedVisit"
+                    >
+                      <i class="bi bi-trash3"></i>
                     </button>
                   </div>
                 </div>
-              </div>
-              <div class="mb-2">
-                <div class="d-flex align-items-center gap-2">
-                  <label class="form-label mb-0">Type</label>
-                  <select
-                    v-model="visitForm.type"
-                    class="form-select form-select-sm"
-                    @change="saveVisitDetails"
-                  >
-                    <option
-                      v-for="option in visitTypeOptions"
-                      :key="option.value"
-                      :value="option.value"
-                    >
-                      {{ option.label }}
-                    </option>
-                  </select>
-                </div>
-              </div>
-              <div class="row g-2 mb-2">
-                <div class="col-lg-7">
+                <div class="mb-2">
                   <div class="d-flex align-items-center gap-2">
-                    <label class="form-label mb-0">Date</label>
-                    <input
-                      v-model="visitForm.dateTime"
-                      type="datetime-local"
-                      class="form-control"
-                      @input="saveVisitDetails"
-                    />
-                  </div>
-                </div>
-                <div class="col-lg-5" v-if="visitForm.type === 'birding'">
-                  <div class="d-flex align-items-center gap-2">
-                    <label class="form-label mb-0">Effort</label>
+                    <label class="form-label mb-0">Name</label>
                     <div class="input-group">
                       <input
-                        v-model.number="visitForm.durationMin"
-                        type="number"
-                        min="0.1"
-                        step="0.1"
+                        v-model="visitForm.name"
+                        class="form-control"
+                        @input="handleNameInput"
+                      />
+                      <button
+                        v-if="nameNeedsUpdate"
+                        class="btn btn-outline-secondary"
+                        type="button"
+                        @click="updateVisitNameFromLocation"
+                        :disabled="!selectedVisit"
+                        aria-label="Update name from location"
+                      >
+                        <i class="bi bi-arrow-clockwise"></i>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <div class="mb-2">
+                  <div class="d-flex align-items-center gap-2">
+                    <label class="form-label mb-0">Type</label>
+                    <select
+                      v-model="visitForm.type"
+                      class="form-select form-select-sm"
+                      @change="saveVisitDetails"
+                    >
+                      <option
+                        v-for="option in visitTypeOptions"
+                        :key="option.value"
+                        :value="option.value"
+                      >
+                        {{ option.label }}
+                      </option>
+                    </select>
+                  </div>
+                </div>
+                <div class="row g-2 mb-2">
+                  <div class="col-lg-7">
+                    <div class="d-flex align-items-center gap-2">
+                      <label class="form-label mb-0">Date</label>
+                      <input
+                        v-model="visitForm.dateTime"
+                        type="datetime-local"
                         class="form-control"
                         @input="saveVisitDetails"
                       />
-                      <span class="input-group-text">hrs</span>
+                    </div>
+                  </div>
+                  <div class="col-lg-5" v-if="visitForm.type === 'birding'">
+                    <div class="d-flex align-items-center gap-2">
+                      <label class="form-label mb-0">Effort</label>
+                      <div class="input-group">
+                        <input
+                          v-model.number="visitForm.durationMin"
+                          type="number"
+                          min="0.1"
+                          step="0.1"
+                          class="form-control"
+                          @input="saveVisitDetails"
+                        />
+                        <span class="input-group-text">hrs</span>
+                      </div>
                     </div>
                   </div>
                 </div>
+                <div class="mb-2">
+                  <label class="form-label">Notes</label>
+                  <textarea
+                    v-model="visitForm.note"
+                    rows="2"
+                    class="form-control"
+                    @input="saveVisitDetails"
+                  ></textarea>
+                </div>
+                <div class="mb-2" v-if="visitForm.type === 'birding'">
+                  <label class="form-label">Species of interest</label>
+                  <v-select
+                    v-model="visitForm.targetSpecies"
+                    :options="tripSpeciesOptions"
+                    label="commonName"
+                    :reduce="(species) => species.code"
+                    multiple
+                    :close-on-select="false"
+                    :clearable="false"
+                    :searchable="true"
+                    :append-to-body="true"
+                    :disabled="visitForm.type !== 'birding'"
+                    placeholder="Select species"
+                    class="species-select"
+                    @update:modelValue="saveTargetSpecies"
+                  >
+                    <template #option="{ commonName, scientificName, code }">
+                      <div class="d-flex flex-column">
+                        <span class="fw-semibold small">{{ commonName || code }}</span>
+                        <span class="text-muted small" v-if="scientificName">
+                          {{ scientificName }}
+                        </span>
+                      </div>
+                    </template>
+                    <template #selected-option="{ commonName, code }">
+                      <span class="small">{{ commonName || code }}</span>
+                    </template>
+                  </v-select>
+                </div>
+                <div class="text-muted small" v-if="visitForm.type === 'birding'">
+                  {{ selectedVisitStats.species }} species ·
+                  {{ selectedVisitStats.checklists }} checklists ·
+                  {{ selectedVisitStats.locations }} locations
+                </div>
               </div>
-              <div class="mb-2">
-                <label class="form-label">Notes</label>
-                <textarea
-                  v-model="visitForm.note"
-                  rows="2"
-                  class="form-control"
-                  @input="saveVisitDetails"
-                ></textarea>
-              </div>
-              <div class="mb-2" v-if="visitForm.type === 'birding'">
-                <label class="form-label">Species of interest</label>
-                <v-select
-                  v-model="visitForm.targetSpecies"
-                  :options="tripSpeciesOptions"
-                  label="commonName"
-                  :reduce="(species) => species.code"
-                  multiple
-                  :close-on-select="false"
-                  :clearable="false"
-                  :searchable="true"
-                  :append-to-body="true"
-                  :disabled="visitForm.type !== 'birding'"
-                  placeholder="Select species"
-                  class="species-select"
-                  @update:modelValue="saveTargetSpecies"
-                >
-                  <template #option="{ commonName, scientificName, code }">
-                    <div class="d-flex flex-column">
-                      <span class="fw-semibold small">{{ commonName || code }}</span>
-                      <span class="text-muted small" v-if="scientificName">
-                        {{ scientificName }}
-                      </span>
-                    </div>
-                  </template>
-                  <template #selected-option="{ commonName, code }">
-                    <span class="small">{{ commonName || code }}</span>
-                  </template>
-                </v-select>
-              </div>
-              <div class="text-muted small" v-if="visitForm.type === 'birding'">
-                {{ selectedVisitStats.species }} species ·
-                {{ selectedVisitStats.checklists }} checklists ·
-                {{ selectedVisitStats.locations }} locations
-              </div>
-            </div>
-          </transition>
+            </transition>
           </div>
           <input
             ref="importFileInput"
@@ -2110,7 +2153,7 @@ onBeforeUnmount(() => {
             style="z-index: 4"
           >
             <button
-              class="btn btn-light shadow-sm m-0 m-lg-3"
+              class="btn btn-light shadow-sm m-2 m-lg-3"
               type="button"
               @click="openMobilePanel"
             >
@@ -2205,13 +2248,18 @@ onBeforeUnmount(() => {
 }
 
 .build-trip-splitter {
-  height: 8px;
+  height: 14px;
   background: #f1f3f5;
   border-top: 1px solid #dee2e6;
   border-bottom: 1px solid #dee2e6;
   cursor: row-resize;
   flex: 0 0 auto;
   touch-action: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #9aa0a6;
+  font-size: 0.8rem;
 }
 
 .build-trip-edit {
@@ -2219,7 +2267,6 @@ onBeforeUnmount(() => {
   min-height: 0;
   overflow-y: auto;
   padding: 1rem;
-  border-top: 2px solid #198754;
 }
 
 .build-trip-pane {
