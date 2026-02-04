@@ -30,6 +30,7 @@ const mapContainer = ref(null);
 let map = null;
 let mapLoaded = false;
 let popup = null;
+let geolocateControl = null;
 const mapStyle = ref("mapbox://styles/mapbox/outdoors-v12");
 const isSatellite = computed({
   get: () => mapStyle.value === "mapbox://styles/mapbox/satellite-streets-v12",
@@ -611,6 +612,18 @@ const initMap = () => {
   });
 
   map.addControl(new mapboxgl.NavigationControl());
+  geolocateControl = new mapboxgl.GeolocateControl({
+    positionOptions: { enableHighAccuracy: true },
+    trackUserLocation: false,
+    showUserHeading: true,
+    showUserLocation: true,
+  });
+  map.addControl(geolocateControl, "top-right");
+  geolocateControl.on("geolocate", (event) => {
+    const { longitude, latitude } = event?.coords || {};
+    if (!Number.isFinite(longitude) || !Number.isFinite(latitude)) return;
+    map.easeTo({ center: [longitude, latitude] });
+  });
 
   map.on("load", () => {
     mapLoaded = true;

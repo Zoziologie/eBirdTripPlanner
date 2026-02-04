@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, watch, computed } from "vue";
+import { ref, onMounted, onBeforeUnmount, watch, computed } from "vue";
 import { db } from "../data/db";
 import Initiate from "../components/Initiate.vue";
 import LifeList from "../components/LifeList.vue";
@@ -43,6 +43,9 @@ const showLastSyncLabel = computed(
   () => tripReportAlertVariant.value === "success" && lastTripReportSyncTime.value,
 );
 const lastTripReportSyncTime = ref(null);
+const installPromptEvent = ref(null);
+const isPwaInstalled = ref(false);
+const canInstallPwa = computed(() => Boolean(installPromptEvent.value) && !isPwaInstalled.value);
 
 const formatSyncTimestamp = (value) => {
   if (!value) return "";
@@ -50,6 +53,30 @@ const formatSyncTimestamp = (value) => {
     return new Date(value).toLocaleString();
   } catch {
     return "";
+  }
+};
+
+const handleBeforeInstallPrompt = (event) => {
+  event.preventDefault();
+  installPromptEvent.value = event;
+};
+
+const handleAppInstalled = () => {
+  isPwaInstalled.value = true;
+  installPromptEvent.value = null;
+};
+
+const triggerPwaInstall = async () => {
+  const prompt = installPromptEvent.value;
+  if (!prompt) return;
+  prompt.prompt();
+  try {
+    const { outcome } = await prompt.userChoice;
+    if (outcome === "accepted") {
+      installPromptEvent.value = null;
+    }
+  } catch (error) {
+    console.warn("Install prompt failed", error);
   }
 };
 
@@ -111,23 +138,34 @@ const handleProcessed = async (payload) => {
   await createTripFromProcessed(payload);
 };
 
-const normalizedTripName = computed(() => tripForm.value.name.trim().toLowerCase());
-const hasDuplicateName = computed(() => {
-  if (!normalizedTripName.value) return false;
+const isRenameModalOpen = ref(false);
+const renameTripName = ref("");
+const normalizedRenameTripName = computed(() => renameTripName.value.trim().toLowerCase());
+const hasDuplicateRename = computed(() => {
+  if (!normalizedRenameTripName.value) return false;
   return trips.value.some(
     (trip) =>
-      trip.name?.trim().toLowerCase() === normalizedTripName.value &&
+      trip.name?.trim().toLowerCase() === normalizedRenameTripName.value &&
       trip.id !== selectedTripId.value,
   );
 });
 
 const speciesList = computed(() => processedData.value?.speciesList || []);
 const region = computed(() => processedData.value?.region || { code: "", name: "" });
+const totalSpeciesCount = computed(() => speciesList.value.length);
+const newWorldCount = computed(
+  () => speciesList.value.filter((species) => species.liferWorld === true).length,
+);
+const newRegionCount = computed(
+  () => speciesList.value.filter((species) => species.liferRegion === true).length,
+);
+const newTripCount = computed(
+  () => speciesList.value.filter((species) => species.tripReportSeen === false).length,
+);
 
 const persistTripDetails = async () => {
   if (!selectedTripId.value) return;
   if (!tripForm.value.name) return;
-  if (hasDuplicateName.value) return;
   const now = Date.now();
   await db.trips.update(selectedTripId.value, {
     name: tripForm.value.name,
@@ -136,6 +174,29 @@ const persistTripDetails = async () => {
   await loadTrips();
   loadedTrip.value = await db.trips.get(selectedTripId.value);
   setSaveStatus("Trip details updated.");
+};
+
+const openRenameModal = () => {
+  if (!selectedTripId.value) return;
+  renameTripName.value = tripForm.value.name || loadedTrip.value?.name || "";
+  isRenameModalOpen.value = true;
+};
+
+const closeRenameModal = () => {
+  isRenameModalOpen.value = false;
+};
+
+const saveRenameTrip = async () => {
+  if (!selectedTripId.value) return;
+  const nextName = renameTripName.value.trim();
+  if (!nextName || hasDuplicateRename.value) return;
+  const now = Date.now();
+  await db.trips.update(selectedTripId.value, { name: nextName, updatedAt: now });
+  tripForm.value.name = nextName;
+  await loadTrips();
+  loadedTrip.value = await db.trips.get(selectedTripId.value);
+  setSaveStatus("Trip details updated.");
+  closeRenameModal();
 };
 
 const persistTripReportId = async () => {
@@ -194,6 +255,13 @@ watch(selectedTripId, loadTripData, { immediate: true });
 onMounted(async () => {
   resetLocalState();
   await loadTrips();
+  window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
+  window.addEventListener("appinstalled", handleAppInstalled);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
+  window.removeEventListener("appinstalled", handleAppInstalled);
 });
 
 const deleteTrip = async () => {
@@ -421,9 +489,20 @@ const importTrip = async (event) => {
     <div class="col-lg-6">
       <div class="card mb-3">
         <div class="card-body">
-          <h5 class="card-title">Select active trip</h5>
+          <div class="d-flex align-items-center justify-content-between gap-2">
+            <h5 class="card-title mb-0">Select active trip</h5>
+            <button
+              v-if="canInstallPwa"
+              class="btn btn-outline-secondary btn-sm"
+              type="button"
+              @click="triggerPwaInstall"
+            >
+              <i class="bi bi-download"></i>
+              <span class="ms-1">Install app</span>
+            </button>
+          </div>
           <p class="text-muted small mb-2">
-            Pick the trip you want to edit and sync; this selection updates the header indicator.
+            Choose the trip you want to manage. This selection updates the header indicator.
           </p>
           <div v-if="trips.length">
             <select
@@ -437,7 +516,26 @@ const importTrip = async (event) => {
               </option>
             </select>
             <div class="form-text text-muted small mt-1">
-              Choosing a trip here updates the site-wide selection.
+              Trip actions below apply to the selected trip.
+            </div>
+            <div class="d-flex align-items-center gap-2 mt-3 flex-wrap" v-if="selectedTripId">
+              <button class="btn btn-outline-secondary btn-sm flex-fill" @click="openRenameModal">
+                <i class="bi bi-pencil-square me-1"></i>
+                Rename
+              </button>
+              <button
+                class="btn btn-outline-primary btn-sm flex-fill"
+                @click="exportTrip"
+                :disabled="!selectedTripId || isExporting"
+              >
+                <span v-if="isExporting" class="spinner-border spinner-border-sm me-1"></span>
+                <i v-else class="bi bi-download me-1"></i>
+                Export
+              </button>
+              <button class="btn btn-outline-danger btn-sm flex-fill" @click="deleteTrip">
+                <i class="bi bi-trash3 me-1"></i>
+                Delete
+              </button>
             </div>
           </div>
           <div v-else class="text-muted small">
@@ -469,101 +567,135 @@ const importTrip = async (event) => {
     <div class="col-lg-6">
       <div class="card">
         <div class="card-body">
-          <h5 class="card-title">Add trip details</h5>
+          <h5 class="card-title">Targets</h5>
           <p class="text-muted small mb-1">
-            Update the trip name, refine the species list, and optionally sync an eBird trip report.
+            Sync life lists and trip reports to flag world, region, and trip targets.
           </p>
           <div v-if="selectedTripId">
-            <div class="row g-3 align-items-center">
-              <div class="col-md-3">
-                <label class="form-label">Trip name</label>
-              </div>
-              <div class="col-md-9">
-                <input
-                  v-model="tripForm.name"
-                  class="form-control"
-                  placeholder="Spring migration"
-                  @input="persistTripDetails"
-                />
-              </div>
-            </div>
-            <div class="mt-2" v-if="hasDuplicateName">
-              <small class="text-danger">A trip with this name already exists.</small>
-            </div>
-            <hr />
-            <h6>Sync Life list</h6>
             <LifeList
+              variant="targets"
+              :showSummary="false"
               :speciesList="speciesList"
               :region="region"
               @update:speciesList="handleSpeciesListUpdate"
             />
-            <hr />
-            <h6>Sync eBird trip report</h6>
-            <p class="small text-muted mt-1">
-              Paste the trip report ID (from the URL after /tripreport/) — find your report at
-              <a
-                class="text-decoration-none"
-                href="https://ebird.org/mytripreports"
-                target="_blank"
-                rel="noopener"
-              >
-                eBird trip reports
-              </a>
-              .
-            </p>
-            <div class="input-group">
-              <span class="input-group-text">https://ebird.org/tripreport/</span>
-              <input
-                v-model="tripForm.tripReportId"
-                class="form-control"
-                @input="persistTripReportId"
-              />
-              <button
-                class="btn btn-outline-secondary"
-                type="button"
-                @click="syncTripReportSpecies"
-                :disabled="!tripForm.tripReportId || isSyncingTripReport"
-                aria-label="Sync trip report species list"
-              >
-                <span v-if="isSyncingTripReport" class="spinner-border spinner-border-sm"></span>
-                <i v-else class="bi bi-arrow-repeat"></i>
-              </button>
-            </div>
-            <div
-              v-if="tripReportAlertMessage"
-              class="alert py-2 px-3 mt-2 mb-0 small d-flex align-items-center"
-              :class="`alert-${tripReportAlertVariant}`"
-            >
-              <i class="bi me-2" :class="tripReportAlertIcon"></i>
-              <div>
-                <div>{{ tripReportAlertMessage }}</div>
-                <div class="text-muted small" v-if="showLastSyncLabel">
-                  Last synced: {{ formatSyncTimestamp(lastTripReportSyncTime) }}
+            <div class="row g-2 align-items-start mt-3">
+              <div class="col-md-3">
+                <label class="form-label fw-semibold mb-1">
+                  <a
+                    class="text-decoration-none"
+                    href="https://ebird.org/mytripreports"
+                    target="_blank"
+                    rel="noopener"
+                  >
+                    <i class="bi bi-car-front-fill text-danger me-1"></i>
+                    Trip report
+                  </a>
+                </label>
+                <div class="text-muted small">
+                  Paste the trip report ID to mark species seen on this trip.
+                </div>
+              </div>
+              <div class="col-md-9">
+                <div class="input-group">
+                  <span class="input-group-text">https://ebird.org/tripreport/</span>
+                  <input
+                    v-model="tripForm.tripReportId"
+                    class="form-control"
+                    @input="persistTripReportId"
+                  />
+                  <button
+                    class="btn btn-outline-secondary"
+                    type="button"
+                    @click="syncTripReportSpecies"
+                    :disabled="!tripForm.tripReportId || isSyncingTripReport"
+                    aria-label="Sync trip report species list"
+                  >
+                    <span
+                      v-if="isSyncingTripReport"
+                      class="spinner-border spinner-border-sm"
+                    ></span>
+                    <i v-else class="bi bi-arrow-repeat"></i>
+                  </button>
+                </div>
+                <div
+                  v-if="tripReportAlertMessage"
+                  class="alert py-2 px-3 mt-2 mb-0 small d-flex align-items-center"
+                  :class="`alert-${tripReportAlertVariant}`"
+                >
+                  <i class="bi me-2" :class="tripReportAlertIcon"></i>
+                  <div>
+                    <div>{{ tripReportAlertMessage }}</div>
+                    <div class="text-muted small" v-if="showLastSyncLabel">
+                      Last synced: {{ formatSyncTimestamp(lastTripReportSyncTime) }}
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
-            <hr />
-            <p class="text-muted small mb-2">
-              Export the trip to save your progress locally and continue on another computer or
-              phone.
-            </p>
-            <button
-              class="btn btn-outline-primary w-100"
-              @click="exportTrip"
-              :disabled="!selectedTripId || isExporting"
-            >
-              <span v-if="isExporting" class="spinner-border spinner-border-sm me-2"></span>
-              Export this trip
-            </button>
-            <button class="btn btn-outline-danger w-100 mt-2" @click="deleteTrip">
-              Delete trip
-            </button>
+            <div v-if="totalSpeciesCount" class="mt-3 pt-2 border-top">
+              <div class="d-flex flex-wrap gap-3 small">
+                <div><strong>Total Species (EBD):</strong> {{ totalSpeciesCount }}</div>
+                <div>
+                  <strong>New for World:</strong>
+                  <span class="text-danger fw-semibold ms-1">{{ newWorldCount }}</span>
+                </div>
+                <div>
+                  <strong>New for Region:</strong>
+                  <span class="text-danger fw-semibold ms-1">{{ newRegionCount }}</span>
+                </div>
+                <div>
+                  <strong>New for Trip:</strong>
+                  <span class="text-danger fw-semibold ms-1">{{ newTripCount }}</span>
+                </div>
+              </div>
+            </div>
           </div>
           <div v-else class="text-muted mt-3">
-            Select an active trip from the left card to edit its details.
+            Select an active trip from the left card to manage targets.
           </div>
         </div>
       </div>
     </div>
+  </div>
+
+  <div v-if="isRenameModalOpen">
+    <div
+      class="modal fade show"
+      tabindex="-1"
+      role="dialog"
+      aria-modal="true"
+      style="display: block"
+    >
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">Rename trip</h5>
+            <button type="button" class="btn-close" @click="closeRenameModal"></button>
+          </div>
+          <div class="modal-body">
+            <label class="form-label">Trip name</label>
+            <input v-model="renameTripName" class="form-control" placeholder="Spring migration" />
+            <div class="mt-2" v-if="hasDuplicateRename">
+              <small class="text-danger">A trip with this name already exists.</small>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-outline-secondary" type="button" @click="closeRenameModal">
+              Cancel
+            </button>
+            <button
+              class="btn btn-primary"
+              type="button"
+              @click="saveRenameTrip"
+              :disabled="!renameTripName.trim() || hasDuplicateRename"
+            >
+              Rename
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-backdrop fade show"></div>
   </div>
 </template>

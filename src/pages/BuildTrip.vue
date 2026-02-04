@@ -1898,6 +1898,14 @@ onBeforeUnmount(() => {
                 <label class="form-check-label small" for="satelliteToggleBuild">Hybrid map</label>
               </div>
               <button
+                class="btn btn-outline-primary btn-sm"
+                @click="startAddVisit"
+                :disabled="!selectedTripId"
+              >
+                <i :class="addingVisit ? 'bi bi-x-lg' : 'bi bi-plus-lg'"></i>
+                <span class="ms-1 d-none d-md-inline">{{ addingVisit ? "Cancel" : "Add" }}</span>
+              </button>
+              <button
                 class="btn btn-outline-secondary btn-sm"
                 @click="exportVisits"
                 :disabled="!selectedTripId || !visits.length"
@@ -2000,22 +2008,14 @@ onBeforeUnmount(() => {
             </div>
             <transition name="slide">
               <div v-if="selectedVisit" class="build-trip-edit bg-white shadow-sm">
-                <div class="d-flex align-items-center justify-content-between gap-2 mb-2">
-                  <div class="fw-semibold small text-dark">Edit visit</div>
-                  <div class="d-inline-flex align-items-center gap-2">
-                    <button
-                      class="btn btn-outline-primary btn-sm"
-                      @click="startAddVisit"
-                      :disabled="!selectedTripId"
-                    >
-                      <i :class="addingVisit ? 'bi bi-x-lg' : 'bi bi-plus-lg'"></i>
-                      <span class="ms-1">{{ addingVisit ? "Cancel" : "Add" }}</span>
-                    </button>
-                    <button
-                      class="btn btn-outline-danger btn-sm"
-                      @click="deleteVisit"
-                      :disabled="!selectedVisit"
-                    >
+              <div class="d-flex align-items-center justify-content-between gap-2 mb-2">
+                <div class="fw-semibold small text-dark">Edit visit</div>
+                <div class="d-inline-flex align-items-center gap-2">
+                  <button
+                    class="btn btn-outline-danger btn-sm"
+                    @click="deleteVisit"
+                    :disabled="!selectedVisit"
+                  >
                       <i class="bi bi-trash3"></i>
                     </button>
                   </div>

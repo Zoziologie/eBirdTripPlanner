@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted, watch, computed, nextTick } from "vue";
-import { Tooltip } from "bootstrap";
+import { Tooltip, Popover } from "bootstrap";
 import vSelect from "vue-select";
 import "vue-select/dist/vue-select.css";
 import { db } from "../data/db";
@@ -322,12 +322,7 @@ const hasTripReportColumn = computed(() =>
   ),
 );
 const speciesColspan = computed(
-  () =>
-    7 +
-    (selectedVisitId.value ? 1 : 0) +
-    (hasLifeColumn.value ? 1 : 0) +
-    (hasRegionColumn.value ? 1 : 0) +
-    (hasTripReportColumn.value ? 1 : 0),
+  () => 5 + (locationFiltersActive.value ? 2 : 0) + (selectedVisitId.value ? 1 : 0),
 );
 
 const hasActiveLiferFilter = computed(() => Object.values(liferFilters.value).some(Boolean));
@@ -465,6 +460,9 @@ onMounted(async () => {
     document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach((el) => {
       new Tooltip(el);
     });
+    document.querySelectorAll('[data-bs-toggle="popover"]').forEach((el) => {
+      new Popover(el);
+    });
   });
 });
 
@@ -472,6 +470,9 @@ watch(selectedTripId, () => {
   nextTick(() => {
     document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach((el) => {
       new Tooltip(el);
+    });
+    document.querySelectorAll('[data-bs-toggle="popover"]').forEach((el) => {
+      new Popover(el);
     });
   });
 });
@@ -612,111 +613,116 @@ watch(selectedTripId, () => {
                     <button
                       class="btn btn-link p-0 fw-semibold text-decoration-none text-reset"
                       @click="toggleSort('taxon')"
+                      data-bs-toggle="popover"
+                      data-bs-trigger="hover focus"
+                      data-bs-placement="top"
+                      data-bs-title="Row number"
+                      data-bs-content="Shows the current row index (sorted by taxon order when you click)."
                     >
                       # <i :class="[sortIcon('taxon'), 'ms-1']"></i>
+                    </button>
+                  </th>
+                  <th class="text-center" v-if="selectedVisitId">
+                    <button
+                      class="btn btn-link p-0 text-decoration-none text-reset"
+                      type="button"
+                      data-bs-toggle="popover"
+                      data-bs-trigger="hover focus"
+                      data-bs-placement="top"
+                      data-bs-title="Interest"
+                      data-bs-content="Mark a species of interest for the selected visit."
+                    >
+                      <i class="bi bi-star-fill"></i>
                     </button>
                   </th>
                   <th>
                     <button
                       class="btn btn-link p-0 fw-semibold text-decoration-none text-reset"
                       @click="toggleSort('name')"
+                      data-bs-toggle="popover"
+                      data-bs-trigger="hover focus"
+                      data-bs-placement="top"
+                      data-bs-title="Species"
+                      data-bs-content="Common name with quick link to the eBird species map. Icons show world/region/trip targets."
                     >
                       Species <i :class="[sortIcon('name'), 'ms-1']"></i>
-                    </button>
-                  </th>
-                  <th class="text-end">
-                    <button
-                      class="btn btn-link p-0 fw-semibold text-decoration-none text-reset"
-                      @click="toggleSort('overall')"
-                    >
-                      EBD <i :class="[sortIcon('overall'), 'ms-1']"></i>
-                    </button>
-                  </th>
-                  <th class="text-end">
-                    <button
-                      class="btn btn-link p-0 fw-semibold text-decoration-none text-reset"
-                      @click="toggleSort('avg')"
-                    >
-                      Avg. Trip <i :class="[sortIcon('avg'), 'ms-1']"></i>
-                    </button>
-                  </th>
-                  <th class="text-end">
-                    <div class="d-flex align-items-center justify-content-end gap-1">
-                      <button
-                        class="btn btn-link p-0 fw-semibold text-decoration-none text-reset"
-                        @click="toggleSort('detection')"
-                      >
-                        Cum. Trip <i :class="[sortIcon('detection'), 'ms-1']"></i>
-                      </button>
-                      <button
-                        class="btn btn-link p-0 text-muted small"
-                        type="button"
-                        data-bs-toggle="tooltip"
-                        data-bs-placement="top"
-                        title="Cumulative probability of detecting the species at least once across visits."
-                      >
-                        <i class="bi bi-info-circle"></i>
-                      </button>
-                    </div>
-                  </th>
-                  <th class="text-end" v-if="locationFiltersActive">
-                    <button
-                      class="btn btn-link p-0 fw-semibold text-decoration-none text-reset"
-                      @click="toggleSort('location')"
-                    >
-                      Location <i :class="[sortIcon('location'), 'ms-1']"></i>
                     </button>
                   </th>
                   <th class="text-end" v-if="locationFiltersActive">
                     <button
                       class="btn btn-link p-0 fw-semibold text-decoration-none text-reset"
                       @click="toggleSort('rank')"
+                      data-bs-toggle="popover"
+                      data-bs-trigger="hover focus"
+                      data-bs-placement="top"
+                      data-bs-title="Top"
+                      data-bs-content="Rank within the selected location filter (1 is highest)."
                     >
                       Top <i :class="[sortIcon('rank'), 'ms-1']"></i>
                     </button>
                   </th>
-                  <th class="text-center" v-if="selectedVisitId">Interest</th>
-                  <th class="text-center" v-if="hasLifeColumn">Life</th>
-                  <th class="text-center" v-if="hasRegionColumn">Region</th>
-                  <th class="text-center" v-if="hasTripReportColumn">Trip</th>
+                  <th class="text-end" v-if="locationFiltersActive">
+                    <button
+                      class="btn btn-link p-0 fw-semibold text-decoration-none text-reset"
+                      @click="toggleSort('location')"
+                      data-bs-toggle="popover"
+                      data-bs-trigger="hover focus"
+                      data-bs-placement="top"
+                      data-bs-title="Location rate"
+                      data-bs-content="Detection rate within the selected location filter."
+                    >
+                      Location <i :class="[sortIcon('location'), 'ms-1']"></i>
+                    </button>
+                  </th>
+                  <th class="text-end">
+                    <button
+                      class="btn btn-link p-0 fw-semibold text-decoration-none text-reset"
+                      @click="toggleSort('detection')"
+                      data-bs-toggle="popover"
+                      data-bs-trigger="hover focus"
+                      data-bs-placement="top"
+                      data-bs-title="Cumulative trip"
+                      data-bs-content="Cumulative probability of detecting the species at least once across visits."
+                    >
+                      <span class="d-none d-lg-inline">Cumulative Trip</span>
+                      <span class="d-lg-none">Cum. Trip</span>
+                      <i :class="[sortIcon('detection'), 'ms-1']"></i>
+                    </button>
+                  </th>
+                  <th class="text-end">
+                    <button
+                      class="btn btn-link p-0 fw-semibold text-decoration-none text-reset"
+                      @click="toggleSort('avg')"
+                      data-bs-toggle="popover"
+                      data-bs-trigger="hover focus"
+                      data-bs-placement="top"
+                      data-bs-title="Average trip"
+                      data-bs-content="Average detection rate across visits."
+                    >
+                      <span class="d-none d-lg-inline">Average Trip</span>
+                      <span class="d-lg-none">Avg. Trip</span>
+                      <i :class="[sortIcon('avg'), 'ms-1']"></i>
+                    </button>
+                  </th>
+                  <th class="text-end">
+                    <button
+                      class="btn btn-link p-0 fw-semibold text-decoration-none text-reset"
+                      @click="toggleSort('overall')"
+                      data-bs-toggle="popover"
+                      data-bs-trigger="hover focus"
+                      data-bs-placement="top"
+                      data-bs-title="EBD rate"
+                      data-bs-content="Overall detection rate across the filtered EBD data."
+                    >
+                      EBD <i :class="[sortIcon('overall'), 'ms-1']"></i>
+                    </button>
+                  </th>
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="species in sortedSpecies" :key="species.code">
+                <tr v-for="(species, index) in sortedSpecies" :key="species.code">
                   <td class="text-muted d-none d-sm-table-cell">
-                    {{ species.taxonOrder ?? "-" }}
-                  </td>
-                  <td>
-                    <div
-                      class="d-flex align-items-baseline gap-2"
-                      :class="{ 'fw-bold': isTargetSpecies(species.code) }"
-                    >
-                      <span>{{ species.commonName || species.code }}</span>
-                      <span
-                        class="fst-italic text-muted small d-none d-sm-inline"
-                        v-if="species.scientificName"
-                      >
-                        {{ species.scientificName }}
-                      </span>
-                      <a
-                        v-if="getSpeciesMapUrl(species.code)"
-                        :href="getSpeciesMapUrl(species.code)"
-                        target="_blank"
-                        class="link-secondary text-decoration-none small"
-                        title="Open eBird species map"
-                      >
-                        <i class="bi bi-geo-alt"></i>
-                      </a>
-                    </div>
-                  </td>
-                  <td class="text-end rate-cell">{{ formatRate(species.overallRate) }}</td>
-                  <td class="text-end rate-cell">{{ formatRate(species.avgRate) }}</td>
-                  <td class="text-end">{{ formatPercent(species.totalProbability) }}</td>
-                  <td class="text-end rate-cell" v-if="locationFiltersActive">
-                    {{ formatRate(species.locationRate) }}
-                  </td>
-                  <td class="text-end" v-if="locationFiltersActive">
-                    {{ species.locationRank ?? "-" }}
+                    {{ index + 1 }}
                   </td>
                   <td class="text-center" v-if="selectedVisitId">
                     <input
@@ -727,27 +733,55 @@ watch(selectedTripId, () => {
                       :aria-label="`Toggle interest for ${species.commonName || species.code}`"
                     />
                   </td>
-                  <td class="text-center" v-if="hasLifeColumn">
-                    <i
-                      v-if="species.liferWorld === true"
-                      class="bi bi-bullseye text-danger"
-                      title="Not yet seen in life list"
-                    ></i>
+                  <td>
+                    <div
+                      class="d-flex align-items-baseline gap-2"
+                      :class="{ 'fw-bold': isTargetSpecies(species.code) }"
+                    >
+                      <a
+                        v-if="getSpeciesMapUrl(species.code)"
+                        :href="getSpeciesMapUrl(species.code)"
+                        target="_blank"
+                        class="link-secondary text-decoration-none"
+                        title="Open eBird species map"
+                      >
+                        {{ species.commonName || species.code }}
+                      </a>
+                      <span v-else>{{ species.commonName || species.code }}</span>
+                      <span
+                        class="fst-italic text-muted small d-none d-sm-inline"
+                        v-if="species.scientificName"
+                      >
+                        {{ species.scientificName }}
+                      </span>
+                      <span class="d-inline-flex align-items-center gap-1">
+                        <i
+                          v-if="species.liferWorld === true"
+                          class="bi bi-globe2 text-danger species-target-icon"
+                          title="Not yet seen in life list"
+                        ></i>
+                        <i
+                          v-else-if="species.liferRegion === true"
+                          class="bi bi-geo-alt-fill text-danger species-target-icon species-target-icon--region"
+                          title="Not yet seen in region list"
+                        ></i>
+                        <i
+                          v-else-if="species.tripReportSeen === false"
+                          class="bi bi-car-front-fill text-danger species-target-icon species-target-icon--trip"
+                          title="Not yet seen in trip report"
+                        ></i>
+                      </span>
+                    </div>
                   </td>
-                  <td class="text-center" v-if="hasRegionColumn">
-                    <i
-                      v-if="species.liferRegion === true"
-                      class="bi bi-bullseye text-danger"
-                      title="Not yet seen in region list"
-                    ></i>
+                  <td class="text-end" v-if="locationFiltersActive">
+                    {{ species.locationRank ?? "-" }}
                   </td>
-                  <td class="text-center" v-if="hasTripReportColumn">
-                    <i
-                      v-if="species.tripReportSeen === false"
-                      class="bi bi-bullseye text-danger"
-                      title="Not yet seen in trip report"
-                    ></i>
+                  <td class="text-end rate-cell" v-if="locationFiltersActive">
+                    {{ formatRate(species.locationRate) }}
                   </td>
+                  <td class="text-end">{{ formatPercent(species.totalProbability) }}</td>
+                  <td class="text-end rate-cell">{{ formatRate(species.avgRate) }}</td>
+                  <td class="text-end rate-cell">{{ formatRate(species.overallRate) }}</td>
                 </tr>
                 <tr v-if="speciesWithProbabilities.length === 0">
                   <td :colspan="speciesColspan" class="text-muted small">
@@ -844,7 +878,21 @@ watch(selectedTripId, () => {
 
 .rate-cell {
   font-variant-numeric: tabular-nums;
-  font-feature-settings: "tnum" 1, "lnum" 1;
+  font-feature-settings:
+    "tnum" 1,
+    "lnum" 1;
+}
+
+.species-target-icon {
+  font-size: 0.85em;
+}
+
+.species-target-icon--region {
+  font-size: 0.75em;
+}
+
+.species-target-icon--trip {
+  font-size: 0.85em;
 }
 
 @media (max-width: 575.98px) {

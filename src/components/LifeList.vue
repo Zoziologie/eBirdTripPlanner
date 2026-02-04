@@ -1,87 +1,174 @@
 <template>
-  <p class="small text-muted mb-3">
-    Upload your life lists from eBird (use the download button for CSV format). You can upload any
-    type of life list: filtered by date, customized region, or default lists.
-  </p>
-
-  <div class="row g-3">
-    <!-- Life List Upload -->
-    <div class="col-md-12">
-      <div class="d-flex align-items-center gap-2">
-        <label for="lifeListInput" class="form-label fw-semibold mb-0 text-nowrap">
-          <a
-            href="https://ebird.org/lifelist"
-            target="_blank"
-            class="text-decoration-none"
-            title="Open eBird World Life List"
+  <template v-if="variant === 'targets'">
+    <div class="d-flex flex-column gap-3">
+      <div class="row g-2 align-items-start">
+        <div class="col-md-3">
+          <label for="lifeListInput" class="form-label fw-semibold mb-1">
+            <a
+              href="https://ebird.org/lifelist"
+              target="_blank"
+              class="text-decoration-none"
+              title="Open eBird World Life List"
+            >
+              <i class="bi bi-globe2 text-danger me-1"></i>
+              Life list
+            </a>
+          </label>
+          <div class="text-muted small">CSV export of your world life list.</div>
+        </div>
+        <div class="col-md-9">
+          <input
+            type="file"
+            id="lifeListInput"
+            @change="handleLifeListUpload"
+            accept=".csv"
+            ref="lifeListInput"
+            class="form-control form-control-sm"
+          />
+          <div
+            v-if="hasLifeList"
+            class="alert alert-success py-1 px-2 mt-2 mb-0 small d-flex align-items-center"
           >
-            Life List
-          </a>
-        </label>
-        <input
-          type="file"
-          id="lifeListInput"
-          @change="handleLifeListUpload"
-          accept=".csv"
-          ref="lifeListInput"
-          class="form-control form-control-sm"
-        />
+            <i class="bi bi-check-circle-fill me-2"></i>
+            <div><strong>Loaded:</strong> {{ lifeListCount }} species</div>
+          </div>
+          <div v-if="lifeListError" class="alert alert-danger py-1 px-2 mt-2 mb-0 small">
+            <i class="bi bi-exclamation-triangle-fill me-2"></i>
+            {{ lifeListError }}
+          </div>
+        </div>
       </div>
 
-      <div
-        v-if="hasLifeList"
-        class="alert alert-success py-1 px-2 mt-2 mb-0 small d-flex align-items-center"
-      >
-        <i class="bi bi-check-circle-fill me-2"></i>
-        <div><strong>Loaded:</strong> {{ lifeListCount }} species</div>
-      </div>
-      <div v-if="lifeListError" class="alert alert-danger py-1 px-2 mt-2 mb-0 small">
-        <i class="bi bi-exclamation-triangle-fill me-2"></i>
-        {{ lifeListError }}
+      <div class="row g-2 align-items-start">
+        <div class="col-md-3">
+          <label for="regionListInput" class="form-label fw-semibold mb-1">
+            <a
+              v-if="region.code"
+              :href="`https://ebird.org/lifelist/${region.code}`"
+              target="_blank"
+              class="text-decoration-none"
+              :title="`Open eBird life list for ${region.name || region.code}`"
+            >
+              <i class="bi bi-geo-alt-fill text-danger me-1"></i>
+              Region list
+            </a>
+            <span v-else>
+              <i class="bi bi-geo-alt-fill text-danger me-1"></i>
+              Region list
+            </span>
+          </label>
+          <div class="text-muted small">CSV export for your trip region.</div>
+        </div>
+        <div class="col-md-9">
+          <input
+            type="file"
+            id="regionListInput"
+            @change="handleRegionListUpload"
+            accept=".csv"
+            ref="regionListInput"
+            class="form-control form-control-sm"
+          />
+          <div
+            v-if="hasRegionList"
+            class="alert alert-success py-1 px-2 mt-2 mb-0 small d-flex align-items-center"
+          >
+            <i class="bi bi-check-circle-fill me-2"></i>
+            <div><strong>Loaded:</strong> {{ regionListCount }} species</div>
+          </div>
+          <div v-if="regionListError" class="alert alert-danger py-1 px-2 mt-2 mb-0 small">
+            <i class="bi bi-exclamation-triangle-fill me-2"></i>
+            {{ regionListError }}
+          </div>
+        </div>
       </div>
     </div>
+  </template>
 
-    <!-- Region List Upload -->
-    <div class="col-md-12">
-      <div class="d-flex align-items-center gap-2">
-        <label for="regionListInput" class="form-label fw-semibold mb-0 text-nowrap">
-          <a
-            v-if="region.code"
-            :href="`https://ebird.org/lifelist/${region.code}`"
-            target="_blank"
-            class="text-decoration-none"
-            :title="`Open eBird life list for ${region.name || region.code}`"
-          >
-            Region List
-          </a>
-          <span v-else>Region List</span>
-        </label>
-        <input
-          type="file"
-          id="regionListInput"
-          @change="handleRegionListUpload"
-          accept=".csv"
-          ref="regionListInput"
-          class="form-control form-control-sm"
-        />
+  <template v-else>
+    <p class="small text-muted mb-3">
+      Upload your life lists from eBird (use the download button for CSV format). You can upload any
+      type of life list: filtered by date, customized region, or default lists.
+    </p>
+
+    <div class="row g-3">
+      <!-- Life List Upload -->
+      <div class="col-md-12">
+        <div class="d-flex align-items-center gap-2">
+          <label for="lifeListInput" class="form-label fw-semibold mb-0 text-nowrap">
+            <a
+              href="https://ebird.org/lifelist"
+              target="_blank"
+              class="text-decoration-none"
+              title="Open eBird World Life List"
+            >
+              Life List
+            </a>
+          </label>
+          <input
+            type="file"
+            id="lifeListInput"
+            @change="handleLifeListUpload"
+            accept=".csv"
+            ref="lifeListInput"
+            class="form-control form-control-sm"
+          />
+        </div>
+
+        <div
+          v-if="hasLifeList"
+          class="alert alert-success py-1 px-2 mt-2 mb-0 small d-flex align-items-center"
+        >
+          <i class="bi bi-check-circle-fill me-2"></i>
+          <div><strong>Loaded:</strong> {{ lifeListCount }} species</div>
+        </div>
+        <div v-if="lifeListError" class="alert alert-danger py-1 px-2 mt-2 mb-0 small">
+          <i class="bi bi-exclamation-triangle-fill me-2"></i>
+          {{ lifeListError }}
+        </div>
       </div>
 
-      <div
-        v-if="hasRegionList"
-        class="alert alert-success py-1 px-2 mt-2 mb-0 small d-flex align-items-center"
-      >
-        <i class="bi bi-check-circle-fill me-2"></i>
-        <div><strong>Loaded:</strong> {{ regionListCount }} species</div>
-      </div>
-      <div v-if="regionListError" class="alert alert-danger py-1 px-2 mt-2 mb-0 small">
-        <i class="bi bi-exclamation-triangle-fill me-2"></i>
-        {{ regionListError }}
+      <!-- Region List Upload -->
+      <div class="col-md-12">
+        <div class="d-flex align-items-center gap-2">
+          <label for="regionListInput" class="form-label fw-semibold mb-0 text-nowrap">
+            <a
+              v-if="region.code"
+              :href="`https://ebird.org/lifelist/${region.code}`"
+              target="_blank"
+              class="text-decoration-none"
+              :title="`Open eBird life list for ${region.name || region.code}`"
+            >
+              Region List
+            </a>
+            <span v-else>Region List</span>
+          </label>
+          <input
+            type="file"
+            id="regionListInput"
+            @change="handleRegionListUpload"
+            accept=".csv"
+            ref="regionListInput"
+            class="form-control form-control-sm"
+          />
+        </div>
+
+        <div
+          v-if="hasRegionList"
+          class="alert alert-success py-1 px-2 mt-2 mb-0 small d-flex align-items-center"
+        >
+          <i class="bi bi-check-circle-fill me-2"></i>
+          <div><strong>Loaded:</strong> {{ regionListCount }} species</div>
+        </div>
+        <div v-if="regionListError" class="alert alert-danger py-1 px-2 mt-2 mb-0 small">
+          <i class="bi bi-exclamation-triangle-fill me-2"></i>
+          {{ regionListError }}
+        </div>
       </div>
     </div>
-  </div>
+  </template>
 
   <!-- Summary -->
-  <div v-if="hasLifeList || hasRegionList" class="mt-3 pt-2 border-top">
+  <div v-if="showSummary && (hasLifeList || hasRegionList)" class="mt-3 pt-2 border-top">
     <div class="d-flex gap-4 small">
       <div><strong>Total Species:</strong> {{ speciesCount }}</div>
       <div v-if="hasLifeList">
@@ -110,6 +197,14 @@ export default {
       type: Object,
       required: true,
       default: () => ({ code: "", name: "" }),
+    },
+    variant: {
+      type: String,
+      default: "default",
+    },
+    showSummary: {
+      type: Boolean,
+      default: true,
     },
   },
   emits: ["update:speciesList"],
