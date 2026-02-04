@@ -47,9 +47,13 @@ const routeSegments = ref({});
 const routeLoadingId = ref("");
 let routeRequestId = 0;
 const itineraryListRef = ref(null);
+const itineraryBodyRef = ref(null);
 const mapStyle = ref("mapbox://styles/mapbox/outdoors-v12");
 const pendingMapState = ref(null);
 const visitStatsTimers = new Map();
+const isMobilePanelOpen = ref(false);
+const itinerarySplitPercent = ref(60);
+const isDraggingSplit = ref(false);
 const isSatellite = computed({
   get: () => mapStyle.value === "mapbox://styles/mapbox/satellite-streets-v12",
   set: (value) => {
@@ -1033,6 +1037,52 @@ const applyVisitUpdates = async (visitId, updates, options = {}) => {
   }
 };
 
+const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+
+const updateSplitFromPointer = (clientY) => {
+  const body = itineraryBodyRef.value;
+  if (!body) return;
+  const rect = body.getBoundingClientRect();
+  if (!rect.height) return;
+  const minTop = 180;
+  const minBottom = 200;
+  const maxTop = Math.max(minTop, rect.height - minBottom);
+  const nextTop = clamp(clientY - rect.top, minTop, maxTop);
+  const nextPercent = (nextTop / rect.height) * 100;
+  itinerarySplitPercent.value = Math.round(nextPercent * 10) / 10;
+};
+
+const startSplitDrag = (event) => {
+  if (!selectedVisit.value) return;
+  event.preventDefault();
+  isDraggingSplit.value = true;
+  updateSplitFromPointer(event.clientY);
+
+  const handleMove = (moveEvent) => {
+    updateSplitFromPointer(moveEvent.clientY);
+  };
+  const handleUp = () => {
+    isDraggingSplit.value = false;
+    window.removeEventListener("pointermove", handleMove);
+    window.removeEventListener("pointerup", handleUp);
+  };
+  window.addEventListener("pointermove", handleMove);
+  window.addEventListener("pointerup", handleUp);
+};
+
+const itinerarySplitStyle = computed(() => {
+  if (!selectedVisit.value) return {};
+  return { "--itinerary-split": `${itinerarySplitPercent.value}%` };
+});
+
+const openMobilePanel = () => {
+  isMobilePanelOpen.value = true;
+};
+
+const closeMobilePanel = () => {
+  isMobilePanelOpen.value = false;
+};
+
 const saveVisitDetails = async () => {
   const visit = selectedVisit.value;
   if (!visit) return;
@@ -1789,7 +1839,10 @@ onBeforeUnmount(() => {
 <template>
   <div class="d-flex flex-column flex-grow-1 h-100 overflow-hidden build-trip">
     <div class="row g-0 flex-grow-1 h-100 build-trip-row">
-      <div class="col-12 col-lg-5 col-xl-5 col-xxl-4 d-flex h-100 build-trip-pane">
+      <div
+        class="col-12 col-lg-5 col-xl-5 col-xxl-4 d-flex h-100 build-trip-pane build-trip-panel"
+        :class="{ 'is-open': isMobilePanelOpen }"
+      >
         <div
           class="card rounded-0 border-0 border-end flex-grow-1 d-flex flex-column build-trip-card"
         >
@@ -1823,72 +1876,91 @@ onBeforeUnmount(() => {
                 <i class="bi bi-upload"></i>
                 <span class="ms-1">Import</span>
               </button>
-            </div>
-          </div>
-        <div
-          ref="itineraryListRef"
-          class="list-group list-group-flush flex-grow-1 overflow-auto bg-white"
-        >
-            <template v-for="group in groupedVisits" :key="group.dateKey">
-              <div
-                class="small fw-semibold text-muted bg-light py-1 px-3 border-top border-bottom position-sticky top-0"
+              <button
+                class="btn btn-outline-secondary btn-sm d-lg-none"
+                type="button"
+                aria-label="Close itinerary panel"
+                @click="closeMobilePanel"
               >
-                <span>{{ group.dateKey }}</span>
-              </div>
-            <button
-              v-for="visit in group.visits"
-              :key="visit.id"
-              type="button"
-              class="list-group-item list-group-item-action"
-              :data-visit-id="visit.id"
-              :class="{ active: String(visit.id) === String(selectedVisitId) }"
-              @click="selectedVisitId = visit.id"
-            >
-                <div class="d-flex align-items-center justify-content-between gap-2">
-                  <div class="d-flex align-items-center gap-2 flex-grow-1 overflow-hidden">
-                    <span class="text-muted small" :title="getVisitTypeLabel(visit)">
-                      <i :class="['bi', getVisitTypeIcon(visit)]"></i>
-                    </span>
-                    <span class="small text-muted text-nowrap">{{
-                      formatVisitTime(visit.dateTime)
-                    }}</span>
-                    <span class="fw-semibold text-truncate flex-grow-1">
-                      {{ visit.name || "Untitled visit" }}
-                    </span>
-                  </div>
-                  <div class="d-inline-flex align-items-center gap-2">
-                    <span
-                      class="small text-muted d-inline-flex align-items-center gap-1 text-nowrap"
-                      v-if="getLegSummary(visit.id)"
-                    >
-                      <i class="bi bi-arrow-right"></i>
-                      {{ getLegSummary(visit.id) }}
-                    </span>
-                    <button
-                      class="btn btn-outline-secondary btn-sm"
-                      type="button"
-                      @click.stop="computeRouteSegment(visit.id)"
-                      :disabled="routeLoadingId === String(visit.id) || visit.globalIndex === 0"
-                    >
-                      <span
-                        v-if="routeLoadingId === String(visit.id)"
-                        class="spinner-border spinner-border-sm"
-                      ></span>
-                      <i v-else class="bi bi-signpost-split"></i>
-                    </button>
-                  </div>
-                </div>
+                <i class="bi bi-x-lg"></i>
               </button>
-            </template>
-            <div v-if="sortedVisits.length === 0" class="p-3 text-muted small">
-              No visits yet. Add one to get started.
             </div>
           </div>
-          <transition name="slide">
+          <div
+            ref="itineraryBodyRef"
+            class="build-trip-body"
+            :class="{ 'is-dragging': isDraggingSplit }"
+            :style="itinerarySplitStyle"
+          >
+            <div
+              ref="itineraryListRef"
+              class="list-group list-group-flush bg-white build-trip-list"
+              :class="{ 'is-full': !selectedVisit }"
+            >
+              <template v-for="group in groupedVisits" :key="group.dateKey">
+                <div
+                  class="small fw-semibold text-muted bg-light py-1 px-3 border-top border-bottom position-sticky top-0"
+                >
+                  <span>{{ group.dateKey }}</span>
+                </div>
+                <button
+                  v-for="visit in group.visits"
+                  :key="visit.id"
+                  type="button"
+                  class="list-group-item list-group-item-action"
+                  :data-visit-id="visit.id"
+                  :class="{ active: String(visit.id) === String(selectedVisitId) }"
+                  @click="selectedVisitId = visit.id"
+                >
+                  <div class="d-flex align-items-center justify-content-between gap-2">
+                    <div class="d-flex align-items-center gap-2 flex-grow-1 overflow-hidden">
+                      <span class="text-muted small" :title="getVisitTypeLabel(visit)">
+                        <i :class="['bi', getVisitTypeIcon(visit)]"></i>
+                      </span>
+                      <span class="small text-muted text-nowrap">{{
+                        formatVisitTime(visit.dateTime)
+                      }}</span>
+                      <span class="fw-semibold text-truncate flex-grow-1">
+                        {{ visit.name || "Untitled visit" }}
+                      </span>
+                    </div>
+                    <div class="d-inline-flex align-items-center gap-2">
+                      <span
+                        class="small text-muted d-inline-flex align-items-center gap-1 text-nowrap"
+                        v-if="getLegSummary(visit.id)"
+                      >
+                        <i class="bi bi-arrow-right"></i>
+                        {{ getLegSummary(visit.id) }}
+                      </span>
+                      <button
+                        class="btn btn-outline-secondary btn-sm"
+                        type="button"
+                        @click.stop="computeRouteSegment(visit.id)"
+                        :disabled="routeLoadingId === String(visit.id) || visit.globalIndex === 0"
+                      >
+                        <span
+                          v-if="routeLoadingId === String(visit.id)"
+                          class="spinner-border spinner-border-sm"
+                        ></span>
+                        <i v-else class="bi bi-signpost-split"></i>
+                      </button>
+                    </div>
+                  </div>
+                </button>
+              </template>
+              <div v-if="sortedVisits.length === 0" class="p-3 text-muted small">
+                No visits yet. Add one to get started.
+              </div>
+            </div>
             <div
               v-if="selectedVisit"
-              class="border-top border-2 border-success bg-white px-3 py-3 shadow-sm"
-            >
+              class="build-trip-splitter"
+              role="separator"
+              aria-label="Resize itinerary panels"
+              @pointerdown="startSplitDrag"
+            ></div>
+            <transition name="slide">
+              <div v-if="selectedVisit" class="build-trip-edit bg-white shadow-sm">
               <div class="d-flex align-items-center justify-content-between gap-2 mb-2">
                 <div class="fw-semibold small text-dark">Edit visit</div>
                 <div class="d-inline-flex align-items-center gap-2">
@@ -2012,9 +2084,6 @@ onBeforeUnmount(() => {
                     <span class="small">{{ commonName || code }}</span>
                   </template>
                 </v-select>
-                <div class="text-muted small mt-1">
-                  Select one or more species to highlight them in the Species List.
-                </div>
               </div>
               <div class="text-muted small" v-if="visitForm.type === 'birding'">
                 {{ selectedVisitStats.species }} species ·
@@ -2023,6 +2092,7 @@ onBeforeUnmount(() => {
               </div>
             </div>
           </transition>
+          </div>
           <input
             ref="importFileInput"
             type="file"
@@ -2032,8 +2102,22 @@ onBeforeUnmount(() => {
           />
         </div>
       </div>
-      <div class="col-12 col-lg-7 col-xl-7 col-xxl-8 d-flex build-trip-pane">
+      <div class="col-12 col-lg-7 col-xl-7 col-xxl-8 d-flex build-trip-pane build-trip-map-pane">
         <div class="position-relative flex-grow-1 h-100 build-trip-map" style="min-height: 420px">
+          <div
+            class="position-absolute top-0 start-0 d-lg-none pe-auto"
+            v-if="tripData && !isMobilePanelOpen"
+            style="z-index: 4"
+          >
+            <button
+              class="btn btn-light shadow-sm m-0 m-lg-3"
+              type="button"
+              @click="openMobilePanel"
+            >
+              <i class="bi bi-list"></i>
+              <span class="visually-hidden">Open itinerary panel</span>
+            </button>
+          </div>
           <div
             ref="mapContainer"
             class="position-absolute top-0 bottom-0 start-0 end-0 w-100 h-100"
@@ -2098,6 +2182,46 @@ onBeforeUnmount(() => {
   min-height: 0;
 }
 
+.build-trip-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.build-trip-body.is-dragging {
+  cursor: row-resize;
+  user-select: none;
+}
+
+.build-trip-list {
+  flex: 0 0 var(--itinerary-split, 60%);
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.build-trip-list.is-full {
+  flex: 1 1 auto;
+}
+
+.build-trip-splitter {
+  height: 8px;
+  background: #f1f3f5;
+  border-top: 1px solid #dee2e6;
+  border-bottom: 1px solid #dee2e6;
+  cursor: row-resize;
+  flex: 0 0 auto;
+  touch-action: none;
+}
+
+.build-trip-edit {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 1rem;
+  border-top: 2px solid #198754;
+}
+
 .build-trip-pane {
   min-height: 0;
 }
@@ -2113,24 +2237,21 @@ onBeforeUnmount(() => {
 
 .build-trip-row {
   min-height: 0;
+  position: relative;
 }
 
 .slide-enter-active,
 .slide-leave-active {
-  transition:
-    max-height 0.2s ease,
-    opacity 0.2s ease;
+  transition: opacity 0.2s ease;
 }
 
 .slide-enter-from,
 .slide-leave-to {
-  max-height: 0;
   opacity: 0;
 }
 
 .slide-enter-to,
 .slide-leave-from {
-  max-height: 420px;
   opacity: 1;
 }
 
@@ -2151,5 +2272,28 @@ onBeforeUnmount(() => {
   background: #ff6b6b;
   border: 2px solid #ffffff;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+}
+
+@media (max-width: 991.98px) {
+  .build-trip-panel {
+    position: absolute;
+    inset: 0;
+    z-index: 4;
+    display: none !important;
+  }
+
+  .build-trip-panel.is-open {
+    display: flex !important;
+  }
+
+  .build-trip-panel .build-trip-card {
+    border-radius: 0;
+    border-right: 0;
+    height: 100%;
+  }
+
+  .build-trip-panel .build-trip-list {
+    overflow-y: auto;
+  }
 }
 </style>

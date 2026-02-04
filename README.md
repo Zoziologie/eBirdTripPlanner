@@ -2,7 +2,31 @@
 
 Plan birding trips from the eBird Basic Dataset (EBD) with an offline-friendly, browser-first workflow. The app processes EBD files locally, stores results in IndexedDB, and gives you a trip builder, a species list with detection rates, and a species map with reporting-rate heat clusters.
 
-**Most important feature:** full client‑side EBD processing (no server required for your data).
+## Main Flow
+
+1. Download the eBird Basic Dataset (EBD) and upload a `.zip`/`.txt` in **Create Trip**.
+2. Filter checklists by region/date, then process and normalize species + locations locally.
+3. Persist the trip in IndexedDB for fast reloads and offline use.
+4. **Build Trip**: plan visits on a map, adjust radius, and track per‑visit stats.
+5. **Species List**: compare detection rates, lifers, and trip-report matches.
+6. **Species Map**: visualize reporting rates with clustering and export KML for selected species.
+
+## Key Features
+
+- Local EBD parsing with progress feedback and filters.
+- Trip management with saved visits and per‑visit stats.
+- Species list with detection rate metrics and flexible sorting.
+- Life list + region list uploads to identify lifers and regional ticks.
+- Species map with reporting‑rate visualization, clustering, and KML export.
+- Offline-friendly PWA build and IndexedDB persistence.
+
+## Screenshots
+
+<img width="1298" height="896" alt="image" src="https://github.com/user-attachments/assets/69c4496d-ce8b-4486-a224-9b57d2dbd68d" />
+
+<img width="1298" height="889" alt="image" src="https://github.com/user-attachments/assets/e38654c2-a458-4d01-9abf-7ecc59b38f3b" />
+
+<img width="1298" height="889" alt="image" src="https://github.com/user-attachments/assets/2a615a39-9f83-480f-a8e6-70f81004357d" />
 
 ## Tech stack
 
@@ -54,7 +78,7 @@ Plan birding trips from the eBird Basic Dataset (EBD) with an offline-friendly, 
       </td>
       <td align="center">
         <a href="https://dexie.org/">
-          <code>Dexie</code>
+          <img src="https://dexie.org/_next/image?q=75&url=%2Fassets%2Fimages%2Fdexie-logo.png&w=256" height="36"/>
         </a>
       </td>
       <td align="center">
@@ -63,58 +87,12 @@ Plan birding trips from the eBird Basic Dataset (EBD) with an offline-friendly, 
         </a>
       </td>
       <td align="center">
-        <a href="https://turfjs.org/">
-          <code>Turf</code>
+        <a href="https://turfjs.org/docs/next/getting-started">
+          <img src="https://raw.githubusercontent.com/Turfjs/turf/9a1d5e8d99564d4080f1e2bf1517ed41d18012fa/logo.png" height="36"/>
         </a>
       </td>
     </tr>
   </tbody>
 </table>
 
-Additional tools: `Vue Router`, `PapaParse`, `JSZip`, `Bootstrap Icons`, `Vite PWA`.
-
-**Main Flow**
-1. Download the eBird Basic Dataset (EBD) and upload a `.zip`/`.txt` in **Create Trip**.
-2. Filter checklists by region/date, then process and normalize species + locations locally.
-3. Persist the trip in IndexedDB for fast reloads and offline use.
-4. **Build Trip**: plan visits on a map, adjust radius, and track per‑visit stats.
-5. **Species List**: compare detection rates, lifers, and trip-report matches.
-6. **Species Map**: visualize reporting rates with clustering and export KML for selected species.
-
-**Key Features**
-- Local EBD parsing with progress feedback and filters.
-- Trip management with saved visits and per‑visit stats.
-- Species list with detection rate metrics and flexible sorting.
-- Life list + region list uploads to identify lifers and regional ticks.
-- Species map with reporting‑rate visualization, clustering, and KML export.
-- Offline-friendly PWA build and IndexedDB persistence.
-
-**Pages**
-- `/create` – Ingest EBD, filter, and create/manage trips.
-- `/buildTrip` – Map-based visit planning with stats and visit details.
-- `/speciesList` – Species table with detection rates, filters, and lifer flags.
-- `/speciesMap` – Reporting‑rate map with clustering and export.
-
-**Screenshots**
-- Create Trip: `docs/screenshots/create-trip.png`
-- Build Trip: `docs/screenshots/build-trip.png`
-- Species List: `docs/screenshots/species-list.png`
-- Species Map: `docs/screenshots/species-map.png`
-
-**Getting Started**
-1. Install dependencies: `npm install`
-2. Run the app: `npm run dev`
-3. Build for production: `npm run build`
-4. Preview the production build: `npm run preview`
-
-**Configuration**
-- Mapbox token is currently set in `src/pages/BuildTrip.vue` and `src/pages/SpeciesMap.vue`.
-- Optional taxonomy refresh (requires an eBird API token): set `EBIRD_API_TOKEN` and run `npm run download-taxo`.
-
-**Data & Privacy**
-- Trip data is stored in the browser’s IndexedDB (Dexie). Clearing site data removes stored trips.
-- Map tiles are fetched from Mapbox.
-- Optional trip report sync uses an external endpoint: `https://tripreport.raphaelnussbaumer.com/`.
-
-**License**
-GPL-3.0-or-later.
+Additional tools: [Vue Router](https://router.vuejs.org/), [PapaParse](https://www.papaparse.com/), [JSZip](https://stuk.github.io/jszip/), [Bootstrap Icons](https://github.com/twbs/icons), [Vite PWA](https://github.com/vite-pwa/vite-plugin-pwa).
