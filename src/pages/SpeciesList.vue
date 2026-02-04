@@ -213,7 +213,9 @@ const formatPercent = (value) => {
 
 const formatRate = (value) => {
   if (value === null || value === undefined || Number.isNaN(value)) return "-";
-  return formatPercent(value);
+  const percent = Number(value) * 100;
+  if (!Number.isFinite(percent)) return "-";
+  return `${percent.toFixed(1)}%`;
 };
 
 const formatVisitDate = (value) => {
@@ -277,7 +279,7 @@ const toggleTargetSpecies = async (code, checked) => {
 
 const visitOptions = computed(() =>
   visitsWithStats.value.map((visit) => ({
-    id: visit.id,
+    id: String(visit.id),
     label: `${formatVisitDate(visit.dateTime)} · ${formatVisitTime(visit.dateTime)} · ${
       visit.name || "Untitled visit"
     }`,
@@ -292,14 +294,18 @@ const goPrevVisit = () => {
   if (!visitsWithStats.value.length) return;
   const startIndex = selectedVisitIndex.value >= 0 ? selectedVisitIndex.value : 0;
   const nextIndex = (startIndex - 1 + visitsWithStats.value.length) % visitsWithStats.value.length;
-  selectedVisitId.value = visitsWithStats.value[nextIndex]?.id || "";
+  selectedVisitId.value = visitsWithStats.value[nextIndex]?.id
+    ? String(visitsWithStats.value[nextIndex].id)
+    : "";
 };
 
 const goNextVisit = () => {
   if (!visitsWithStats.value.length) return;
   const startIndex = selectedVisitIndex.value >= 0 ? selectedVisitIndex.value : -1;
   const nextIndex = (startIndex + 1) % visitsWithStats.value.length;
-  selectedVisitId.value = visitsWithStats.value[nextIndex]?.id || "";
+  selectedVisitId.value = visitsWithStats.value[nextIndex]?.id
+    ? String(visitsWithStats.value[nextIndex].id)
+    : "";
 };
 
 const hasLifeColumn = computed(() =>
@@ -598,11 +604,11 @@ watch(selectedTripId, () => {
             </div>
           </div>
 
-          <div class="table-responsive mt-3">
+          <div class="table-responsive mt-3 species-list-table-wrap">
             <table class="table table-sm align-middle">
               <thead>
                 <tr>
-                  <th>
+                  <th class="d-none d-sm-table-cell">
                     <button
                       class="btn btn-link p-0 fw-semibold text-decoration-none text-reset"
                       @click="toggleSort('taxon')"
@@ -677,14 +683,19 @@ watch(selectedTripId, () => {
               </thead>
               <tbody>
                 <tr v-for="species in sortedSpecies" :key="species.code">
-                  <td class="text-muted">{{ species.taxonOrder ?? "-" }}</td>
+                  <td class="text-muted d-none d-sm-table-cell">
+                    {{ species.taxonOrder ?? "-" }}
+                  </td>
                   <td>
                     <div
                       class="d-flex align-items-baseline gap-2"
                       :class="{ 'fw-bold': isTargetSpecies(species.code) }"
                     >
                       <span>{{ species.commonName || species.code }}</span>
-                      <span class="fst-italic text-muted small" v-if="species.scientificName">
+                      <span
+                        class="fst-italic text-muted small d-none d-sm-inline"
+                        v-if="species.scientificName"
+                      >
                         {{ species.scientificName }}
                       </span>
                       <a
@@ -698,10 +709,10 @@ watch(selectedTripId, () => {
                       </a>
                     </div>
                   </td>
-                  <td class="text-end">{{ formatRate(species.overallRate) }}</td>
-                  <td class="text-end">{{ formatRate(species.avgRate) }}</td>
+                  <td class="text-end rate-cell">{{ formatRate(species.overallRate) }}</td>
+                  <td class="text-end rate-cell">{{ formatRate(species.avgRate) }}</td>
                   <td class="text-end">{{ formatPercent(species.totalProbability) }}</td>
-                  <td class="text-end" v-if="locationFiltersActive">
+                  <td class="text-end rate-cell" v-if="locationFiltersActive">
                     {{ formatRate(species.locationRate) }}
                   </td>
                   <td class="text-end" v-if="locationFiltersActive">
@@ -829,5 +840,43 @@ watch(selectedTripId, () => {
 
 .filter-sliders .text-muted {
   opacity: 0.6;
+}
+
+.rate-cell {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1, "lnum" 1;
+}
+
+@media (max-width: 575.98px) {
+  .species-list-table-wrap {
+    margin-left: calc(-1 * var(--bs-card-spacer-x));
+    margin-right: calc(-1 * var(--bs-card-spacer-x));
+  }
+}
+
+@media (max-width: 767.98px) {
+  .filter-sliders {
+    width: 100%;
+  }
+
+  .filter-sliders .slider-inline {
+    display: grid;
+    grid-template-columns: minmax(140px, 1.2fr) 1fr minmax(48px, 64px);
+    gap: 8px;
+    width: 100%;
+  }
+
+  .filter-sliders .slider-inline > span:first-child {
+    text-align: left;
+  }
+
+  .filter-sliders .slider-inline > span:last-child {
+    text-align: right;
+  }
+
+  .filter-range {
+    width: 100%;
+    max-width: none;
+  }
 }
 </style>

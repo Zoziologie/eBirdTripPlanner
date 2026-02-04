@@ -534,19 +534,24 @@ const setupMapLayers = () => {
       paint: {
         "circle-radius": ["interpolate", ["linear"], ["get", "size_normalized"], 0, 4, 1, 12],
         "circle-color": [
-          "interpolate",
-          ["linear"],
-          ["get", "color_value"],
-          0,
-          "#c9cdd3",
-          0.25,
-          "#7aa5d2",
-          0.5,
-          "#4cc9f0",
-          0.75,
-          "#2fbf71",
-          1,
-          "#1b8a5a",
+          "case",
+          ["==", ["get", "color_value"], 0],
+          "#d6d9de",
+          [
+            "interpolate",
+            ["linear"],
+            ["get", "color_value"],
+            0,
+            "#00c853",
+            0.3,
+            "#8bc34a",
+            0.6,
+            "#ffd54f",
+            0.8,
+            "#ff8a65",
+            1,
+            "#d32f2f",
+          ],
         ],
         "circle-stroke-color": "#ffffff",
         "circle-stroke-width": 2,
@@ -757,7 +762,10 @@ onMounted(async () => {
       class="species-map-overlay position-absolute top-0 start-0 m-0 m-sm-3 d-flex gap-3 pe-none"
       style="z-index: 3"
     >
-      <div class="species-map-panel flex-column gap-3 pe-auto" :class="{ 'is-open': isMobilePanelOpen }">
+      <div
+        class="species-map-panel flex-column gap-3 pe-auto"
+        :class="{ 'is-open': isMobilePanelOpen }"
+      >
         <div class="card shadow-sm" v-if="tripData">
           <div class="card-body">
             <div class="d-flex align-items-center justify-content-between mb-1 gap-2">
@@ -770,7 +778,9 @@ onMounted(async () => {
                     type="checkbox"
                     v-model="isSatellite"
                   />
-                  <label class="form-check-label small" for="satelliteToggleSpecies">Hybrid</label>
+                  <label class="form-check-label small" for="satelliteToggleSpecies"
+                    >Hybrid map</label
+                  >
                 </div>
                 <button
                   class="btn btn-sm btn-outline-secondary d-sm-none"
@@ -800,9 +810,6 @@ onMounted(async () => {
                 <template #option="{ commonName, scientificName, code }">
                   <div class="d-flex flex-column">
                     <span class="fw-semibold">{{ commonName || code }}</span>
-                    <span class="text-muted small" v-if="scientificName">
-                      {{ scientificName }} · {{ code }}
-                    </span>
                   </div>
                 </template>
                 <template #selected-option="{ commonName, code }">
@@ -810,39 +817,39 @@ onMounted(async () => {
                 </template>
               </v-select>
             </div>
-            <div class="trip-summary text-muted small mb-2" v-if="tripData">
-              {{ speciesCount }} species · {{ checklistCount }} checklists ·
-              {{ locationCount }} locations
-            </div>
             <hr class="my-2" />
 
             <div class="fw-semibold small mb-1">Location aggregation</div>
             <div class="text-muted small mb-2">
               Cluster nearby checklists using DBSCAN to consolidate reporting rate.
             </div>
-            <div class="d-flex align-items-center flex-wrap gap-2 mb-2 text-muted small">
-              <label for="dbscanDistance" class="form-label mb-0">Distance</label>
-              <input
-                type="number"
-                id="dbscanDistance"
-                v-model.number="filters.dbscanDistance"
-                class="form-control form-control-sm w-auto"
-                step="0.01"
-                min="0.01"
-                max="10"
-                style="width: 64px"
-              />
-              <span class="text-muted small">km</span>
-              <label for="minChecklist" class="form-label mb-0 ms-2">Min checklists</label>
-              <input
-                type="number"
-                id="minChecklist"
-                v-model.number="filters.minChecklist"
-                class="form-control form-control-sm w-auto"
-                min="1"
-                max="100"
-                style="width: 64px"
-              />
+            <div class="d-flex flex-column gap-2 mb-2 text-muted small">
+              <div class="d-flex align-items-center gap-2">
+                <label for="dbscanDistance" class="form-label mb-0">Distance</label>
+                <input
+                  type="number"
+                  id="dbscanDistance"
+                  v-model.number="filters.dbscanDistance"
+                  class="form-control form-control-sm w-auto"
+                  step="0.01"
+                  min="0.01"
+                  max="10"
+                  style="width: 48px"
+                />
+                <span class="text-muted small">km</span>
+              </div>
+              <div class="d-flex align-items-center gap-2">
+                <label for="minChecklist" class="form-label mb-0">Min checklists</label>
+                <input
+                  type="number"
+                  id="minChecklist"
+                  v-model.number="filters.minChecklist"
+                  class="form-control form-control-sm w-auto"
+                  min="1"
+                  max="100"
+                  style="width: 48px"
+                />
+              </div>
             </div>
             <button
               @click="runDbscan"
@@ -877,6 +884,10 @@ onMounted(async () => {
                 <i class="bi bi-download me-1"></i>
                 Export KML
               </button>
+            </div>
+            <div class="trip-summary text-muted small mt-2" v-if="tripData">
+              {{ speciesCount }} species · {{ checklistCount }} checklists ·
+              {{ locationCount }} locations
             </div>
           </div>
         </div>
@@ -970,11 +981,13 @@ onMounted(async () => {
   border-radius: 999px;
   background: linear-gradient(
     90deg,
-    #c9cdd3 0%,
-    #7aa5d2 25%,
-    #4cc9f0 50%,
-    #2fbf71 75%,
-    #1b8a5a 100%
+    #d6d9de 0%,
+    #d6d9de 1%,
+    #00c853 1%,
+    #8bc34a 30%,
+    #ffd54f 60%,
+    #ff8a65 80%,
+    #d32f2f 100%
   );
   border: 1px solid rgba(0, 0, 0, 0.08);
 }
