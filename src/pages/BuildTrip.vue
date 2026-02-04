@@ -1906,6 +1906,13 @@ onBeforeUnmount(() => {
                 <span class="ms-1 d-none d-md-inline">{{ addingVisit ? "Cancel" : "Add" }}</span>
               </button>
               <button
+                class="btn btn-outline-danger btn-sm"
+                @click="deleteVisit"
+                :disabled="!selectedVisit"
+              >
+                <i class="bi bi-trash3"></i>
+              </button>
+              <button
                 class="btn btn-outline-secondary btn-sm"
                 @click="exportVisits"
                 :disabled="!selectedTripId || !visits.length"
@@ -2009,17 +2016,8 @@ onBeforeUnmount(() => {
             <transition name="slide">
               <div v-if="selectedVisit" class="build-trip-edit bg-white shadow-sm">
               <div class="d-flex align-items-center justify-content-between gap-2 mb-2">
-                <div class="fw-semibold small text-dark">Edit visit</div>
-                <div class="d-inline-flex align-items-center gap-2">
-                  <button
-                    class="btn btn-outline-danger btn-sm"
-                    @click="deleteVisit"
-                    :disabled="!selectedVisit"
-                  >
-                      <i class="bi bi-trash3"></i>
-                    </button>
-                  </div>
-                </div>
+                <div class="fw-semibold small text-dark">Details</div>
+              </div>
                 <div class="mb-2">
                   <div class="d-flex align-items-center gap-2">
                     <label class="form-label mb-0">Name</label>
@@ -2089,20 +2087,14 @@ onBeforeUnmount(() => {
                     </div>
                   </div>
                 </div>
-                <div class="mb-2">
-                  <label class="form-label">Notes</label>
-                  <textarea
-                    v-model="visitForm.note"
-                    rows="2"
-                    class="form-control"
-                    @input="saveVisitDetails"
-                  ></textarea>
-                </div>
-                <div class="mb-2" v-if="visitForm.type === 'birding'">
-                  <label class="form-label">Species of interest</label>
-                  <v-select
-                    v-model="visitForm.targetSpecies"
-                    :options="tripSpeciesOptions"
+              <div class="mb-2" v-if="visitForm.type === 'birding'">
+                <label class="form-label">
+                  <i class="bi bi-star-fill text-warning me-1"></i>
+                  Species of interest
+                </label>
+                <v-select
+                  v-model="visitForm.targetSpecies"
+                  :options="tripSpeciesOptions"
                     label="commonName"
                     :reduce="(species) => species.code"
                     multiple
@@ -2127,6 +2119,15 @@ onBeforeUnmount(() => {
                       <span class="small">{{ commonName || code }}</span>
                     </template>
                   </v-select>
+                </div>
+                <div class="mb-2">
+                  <label class="form-label">Notes</label>
+                  <textarea
+                    v-model="visitForm.note"
+                    rows="2"
+                    class="form-control"
+                    @input="saveVisitDetails"
+                  ></textarea>
                 </div>
                 <div class="text-muted small" v-if="visitForm.type === 'birding'">
                   {{ selectedVisitStats.species }} species ·
@@ -2199,6 +2200,9 @@ onBeforeUnmount(() => {
   padding: 2px 6px;
   font-size: 0.75rem;
   white-space: normal;
+  background: #fff3cd;
+  border-color: #ffe08a;
+  color: #1f2937;
 }
 
 .species-select :deep(.vs__search) {

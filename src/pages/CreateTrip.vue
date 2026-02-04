@@ -532,7 +532,7 @@ const importTrip = async (event) => {
                 <i v-else class="bi bi-download me-1"></i>
                 Export
               </button>
-              <button class="btn btn-outline-danger btn-sm flex-fill" @click="deleteTrip">
+              <button class="btn btn-outline-secondary btn-sm flex-fill text-danger" @click="deleteTrip">
                 <i class="bi bi-trash3 me-1"></i>
                 Delete
               </button>

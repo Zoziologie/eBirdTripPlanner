@@ -27,10 +27,15 @@
           />
           <div
             v-if="hasLifeList"
-            class="alert alert-success py-1 px-2 mt-2 mb-0 small d-flex align-items-center"
+            class="border rounded-2 px-2 py-1 mt-2 mb-0 small d-flex align-items-center justify-content-between bg-light"
           >
-            <i class="bi bi-check-circle-fill me-2"></i>
-            <div><strong>Loaded:</strong> {{ lifeListCount }} species</div>
+            <div class="d-flex align-items-center">
+              <i class="bi bi-check-circle-fill text-success me-2"></i>
+              <div class="text-muted"><strong>Loaded:</strong> {{ lifeListCount }} species</div>
+            </div>
+            <button class="btn btn-outline-secondary btn-sm text-danger" type="button" @click="clearLifeList">
+              <i class="bi bi-trash3"></i>
+            </button>
           </div>
           <div v-if="lifeListError" class="alert alert-danger py-1 px-2 mt-2 mb-0 small">
             <i class="bi bi-exclamation-triangle-fill me-2"></i>
@@ -70,10 +75,15 @@
           />
           <div
             v-if="hasRegionList"
-            class="alert alert-success py-1 px-2 mt-2 mb-0 small d-flex align-items-center"
+            class="border rounded-2 px-2 py-1 mt-2 mb-0 small d-flex align-items-center justify-content-between bg-light"
           >
-            <i class="bi bi-check-circle-fill me-2"></i>
-            <div><strong>Loaded:</strong> {{ regionListCount }} species</div>
+            <div class="d-flex align-items-center">
+              <i class="bi bi-check-circle-fill text-success me-2"></i>
+              <div class="text-muted"><strong>Loaded:</strong> {{ regionListCount }} species</div>
+            </div>
+            <button class="btn btn-outline-secondary btn-sm text-danger" type="button" @click="clearRegionList">
+              <i class="bi bi-trash3"></i>
+            </button>
           </div>
           <div v-if="regionListError" class="alert alert-danger py-1 px-2 mt-2 mb-0 small">
             <i class="bi bi-exclamation-triangle-fill me-2"></i>
@@ -116,10 +126,15 @@
 
         <div
           v-if="hasLifeList"
-          class="alert alert-success py-1 px-2 mt-2 mb-0 small d-flex align-items-center"
+          class="border rounded-2 px-2 py-1 mt-2 mb-0 small d-flex align-items-center justify-content-between bg-light"
         >
-          <i class="bi bi-check-circle-fill me-2"></i>
-          <div><strong>Loaded:</strong> {{ lifeListCount }} species</div>
+          <div class="d-flex align-items-center">
+            <i class="bi bi-check-circle-fill text-success me-2"></i>
+            <div class="text-muted"><strong>Loaded:</strong> {{ lifeListCount }} species</div>
+          </div>
+          <button class="btn btn-outline-secondary btn-sm text-danger" type="button" @click="clearLifeList">
+            <i class="bi bi-trash3"></i>
+          </button>
         </div>
         <div v-if="lifeListError" class="alert alert-danger py-1 px-2 mt-2 mb-0 small">
           <i class="bi bi-exclamation-triangle-fill me-2"></i>
@@ -154,10 +169,15 @@
 
         <div
           v-if="hasRegionList"
-          class="alert alert-success py-1 px-2 mt-2 mb-0 small d-flex align-items-center"
+          class="border rounded-2 px-2 py-1 mt-2 mb-0 small d-flex align-items-center justify-content-between bg-light"
         >
-          <i class="bi bi-check-circle-fill me-2"></i>
-          <div><strong>Loaded:</strong> {{ regionListCount }} species</div>
+          <div class="d-flex align-items-center">
+            <i class="bi bi-check-circle-fill text-success me-2"></i>
+            <div class="text-muted"><strong>Loaded:</strong> {{ regionListCount }} species</div>
+          </div>
+          <button class="btn btn-outline-secondary btn-sm text-danger" type="button" @click="clearRegionList">
+            <i class="bi bi-trash3"></i>
+          </button>
         </div>
         <div v-if="regionListError" class="alert alert-danger py-1 px-2 mt-2 mb-0 small">
           <i class="bi bi-exclamation-triangle-fill me-2"></i>
@@ -311,6 +331,26 @@ export default {
       }
     };
 
+    const clearLifeList = () => {
+      lifeListError.value = "";
+      if (lifeListInput.value) lifeListInput.value.value = "";
+      const updated = props.speciesList.map((species) => ({
+        ...species,
+        liferWorld: null,
+      }));
+      emit("update:speciesList", updated);
+    };
+
+    const clearRegionList = () => {
+      regionListError.value = "";
+      if (regionListInput.value) regionListInput.value.value = "";
+      const updated = props.speciesList.map((species) => ({
+        ...species,
+        liferRegion: null,
+      }));
+      emit("update:speciesList", updated);
+    };
+
     return {
       lifeListInput,
       regionListInput,
@@ -323,6 +363,8 @@ export default {
       speciesCount,
       liferCount,
       regionNewCount,
+      clearLifeList,
+      clearRegionList,
       handleLifeListUpload,
       handleRegionListUpload,
     };

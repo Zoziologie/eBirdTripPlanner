@@ -720,7 +720,12 @@ watch(selectedTripId, () => {
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="(species, index) in sortedSpecies" :key="species.code">
+                <tr
+                  v-for="(species, index) in sortedSpecies"
+                  :key="species.code"
+                  class="species-row"
+                  :class="{ 'species-row--target': isTargetSpecies(species.code) }"
+                >
                   <td class="text-muted d-none d-sm-table-cell">
                     {{ index + 1 }}
                   </td>
@@ -742,7 +747,7 @@ watch(selectedTripId, () => {
                         v-if="getSpeciesMapUrl(species.code)"
                         :href="getSpeciesMapUrl(species.code)"
                         target="_blank"
-                        class="link-secondary text-decoration-none"
+                        class="text-reset text-decoration-none"
                         title="Open eBird species map"
                       >
                         {{ species.commonName || species.code }}
@@ -893,6 +898,18 @@ watch(selectedTripId, () => {
 
 .species-target-icon--trip {
   font-size: 0.85em;
+}
+
+.species-row:hover td {
+  background-color: #f4f6f8;
+}
+
+.species-row--target td {
+  background-color: #fff3cd;
+}
+
+.species-row--target:hover td {
+  background-color: #ffe8a1;
 }
 
 @media (max-width: 575.98px) {
