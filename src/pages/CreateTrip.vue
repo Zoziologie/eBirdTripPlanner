@@ -29,6 +29,8 @@ const tripReportAlertMessage = computed(() => {
 const tripReportAlertVariant = computed(() => {
   const text = (tripReportStatus.value || "").toLowerCase();
   if (text.includes("failed") || text.includes("error")) return "danger";
+  if (text.includes("warning")) return "warning";
+  if (text.includes("canceled")) return "warning";
   if (text.includes("load")) return "warning";
   if (tripReportStatus.value) return "info";
   if (lastTripReportSyncTime.value) return "success";
@@ -349,6 +351,44 @@ const normalizeTripReportEntry = (entry) => {
   };
 };
 
+const getCanonicalSpeciesCode = (species) => {
+  const resolvedTaxon = resolveSpeciesTaxon({
+    speciesCode: species?.code,
+    scientificName: species?.scientificName,
+  });
+  return resolvedTaxon?.speciesCode || species?.code || "";
+};
+
+const collectEbdSpeciesCodes = (locations) => {
+  const codes = new Set();
+  if (!Array.isArray(locations)) return codes;
+
+  locations.forEach((location) => {
+    const entries = Array.isArray(location?.species_checklist_counts)
+      ? location.species_checklist_counts
+      : [];
+    entries.forEach(([code]) => {
+      if (!code) return;
+      const resolvedTaxon = resolveSpeciesTaxon({ speciesCode: code });
+      const normalizedCode = resolvedTaxon?.speciesCode || code;
+      if (normalizedCode) codes.add(normalizedCode);
+    });
+  });
+
+  return codes;
+};
+
+const formatSpeciesLabel = (species) => {
+  const common = (species?.commonName || "").trim();
+  const scientific = (species?.scientificName || "").trim();
+  const code = (species?.code || "").trim();
+  const base =
+    common && scientific
+      ? `${common} (${scientific})`
+      : common || scientific || "Unknown species";
+  return code ? `${base} [${code}]` : base;
+};
+
 const syncTripReportSpecies = async () => {
   const tripReportId = normalizeTripReportId(tripForm.value.tripReportId);
   if (!selectedTripId.value || !tripReportId) return;
@@ -368,9 +408,45 @@ const syncTripReportSpecies = async () => {
     const prepared = entries.map((entry) => normalizeTripReportEntry(entry)).filter(Boolean);
     const codeSet = new Set(prepared.map((item) => item.code).filter(Boolean));
     const sciSet = new Set(prepared.map((item) => item.scientificName).filter(Boolean));
+    const ebdCodeSet = collectEbdSpeciesCodes(processedData.value?.locations || []);
+    const outsideEbdSpecies = prepared.filter((species) => {
+      if (ebdCodeSet.size === 0) return false;
+      return species.code && !ebdCodeSet.has(species.code);
+    });
+    if (outsideEbdSpecies.length > 0) {
+      const uniqueOutside = Array.from(
+        new Map(
+          outsideEbdSpecies.map((species) => [species.code || species.scientificName, species]),
+        ).values(),
+      );
+      const speciesListText = uniqueOutside
+        .map((species, index) => `${index + 1}. ${formatSpeciesLabel(species)}`)
+        .join("\n");
+      const confirmed = window.confirm(
+        [
+          "This trip report includes species not found in the original EBD species list:",
+          "",
+          speciesListText,
+          "",
+          "Press OK to continue and add them.",
+          "Press Cancel to abort this trip report sync.",
+        ].join("\n"),
+      );
+      if (!confirmed) {
+        tripReportStatus.value = "Trip report sync canceled.";
+        return;
+      }
+    }
 
     const existing = processedData.value?.speciesList || [];
-    const nextList = existing.map((species) => {
+    const baselineSpecies = existing.filter((species) => {
+      if (ebdCodeSet.size === 0) return true;
+      const canonicalCode = getCanonicalSpeciesCode(species);
+      return canonicalCode && ebdCodeSet.has(canonicalCode);
+    });
+    const removedOutsideEbdCount = Math.max(existing.length - baselineSpecies.length, 0);
+
+    const nextList = baselineSpecies.map((species) => {
       const match =
         (species.code && codeSet.has(species.code)) ||
         (species.scientificName && sciSet.has(species.scientificName));
@@ -409,7 +485,10 @@ const syncTripReportSpecies = async () => {
     bumpEbdUpdatedAt();
     await db.trips.update(selectedTripId.value, { tripReportSyncedAt: syncTimestamp });
     lastTripReportSyncTime.value = syncTimestamp;
-    tripReportStatus.value = "Trip report species synced.";
+    tripReportStatus.value =
+      removedOutsideEbdCount > 0
+        ? `Trip report species synced. ${removedOutsideEbdCount} previously added non-EBD species were removed from this trip.`
+        : "Trip report species synced.";
   } catch (error) {
     tripReportStatus.value = `Trip report sync failed: ${error.message || error}`;
   } finally {
