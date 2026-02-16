@@ -534,13 +534,63 @@ const exportTrip = async () => {
   }
 };
 
+const stripUtf8Bom = (text) => {
+  if (typeof text !== "string") return "";
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+};
+
+const readFileWithFileReader = (file) =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
+    reader.onerror = () => reject(reader.error || new Error("FileReader failed"));
+    reader.readAsText(file);
+  });
+
+const readImportedTripFile = async (file) => {
+  const attempts = [];
+
+  if (typeof file?.text === "function") {
+    try {
+      const text = await file.text();
+      if (typeof text === "string" && text.trim()) return stripUtf8Bom(text);
+      attempts.push("empty text() result");
+    } catch (error) {
+      attempts.push(`text() failed: ${error?.message || error}`);
+    }
+  }
+
+  if (typeof file?.arrayBuffer === "function") {
+    try {
+      const buffer = await file.arrayBuffer();
+      const text = new TextDecoder("utf-8").decode(buffer);
+      if (text.trim()) return stripUtf8Bom(text);
+      attempts.push("empty arrayBuffer() decode");
+    } catch (error) {
+      attempts.push(`arrayBuffer() failed: ${error?.message || error}`);
+    }
+  }
+
+  try {
+    const text = await readFileWithFileReader(file);
+    if (text.trim()) return stripUtf8Bom(text);
+    attempts.push("empty FileReader result");
+  } catch (error) {
+    attempts.push(`FileReader failed: ${error?.message || error}`);
+  }
+
+  throw new Error(
+    `Could not read file content from this provider. ${attempts.join("; ")}. Try downloading locally first.`,
+  );
+};
+
 const importTrip = async (event) => {
   const file = event.target.files[0];
   if (!file) return;
   transferStatus.value = "";
   isImporting.value = true;
   try {
-    const contents = await file.text();
+    const contents = await readImportedTripFile(file);
     const parsed = JSON.parse(contents);
     if (!parsed || typeof parsed !== "object" || !parsed.trip?.id) {
       throw new Error("Invalid trip file.");
@@ -657,7 +707,7 @@ const importTrip = async (event) => {
           <input
             type="file"
             class="form-control"
-            accept="application/json"
+            accept=".json,application/json,text/plain,application/octet-stream"
             @change="importTrip"
             :disabled="isImporting"
           />
