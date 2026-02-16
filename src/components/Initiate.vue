@@ -181,16 +181,10 @@
 import { ref, reactive } from "vue";
 import Papa from "papaparse";
 import JSZip from "jszip";
-import taxonomy from "../assets/eBird_taxonomy.json";
-
-const taxonomy_sci = taxonomy.reduce((acc, row) => {
-  acc[row["sciName"]] = row;
-  return acc;
-}, {});
-const taxonomy_code = taxonomy.reduce((acc, row) => {
-  acc[row["speciesCode"]] = row;
-  return acc;
-}, {});
+import {
+  taxonomyByScientificName as taxonomy_sci,
+  taxonomyByCode as taxonomy_code,
+} from "../utils/taxonomy";
 
 export default {
   emits: ["processed"],
@@ -403,7 +397,6 @@ export default {
 
       setTimeout(() => {
         const uploadChecklists = {};
-        const excludedSpecies = new Set();
 
         for (const row of rawData.value) {
           const rowDate = new Date(row["OBSERVATION DATE"]);
@@ -426,19 +419,11 @@ export default {
 
           const sciName = row["SCIENTIFIC NAME"];
           const match = taxonomy_sci[sciName];
-          const speciesID = match?.REPORT_AS || match?.speciesCode || sciName;
+          const speciesID = match?.reportAs || match?.REPORT_AS || match?.speciesCode || sciName;
           const match2 = taxonomy_code[speciesID] || { comName: row["COMMON NAME"] };
           const speciesCode = match2.speciesCode;
 
           if (match2.category !== "species") {
-            excludedSpecies.add(
-              JSON.stringify({
-                scientificName: sciName,
-                commonName: row["COMMON NAME"],
-                category: match2.category || "unknown",
-                speciesCode: speciesCode,
-              }),
-            );
             continue;
           }
 

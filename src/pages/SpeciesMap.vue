@@ -7,6 +7,7 @@ import vSelect from "vue-select";
 import "vue-select/dist/vue-select.css";
 import { db } from "../data/db";
 import { trips, selectedTripId, refreshTrips } from "../state/tripSelection";
+import { ebdUpdatedAt } from "../state/ebdUpdates";
 
 const tripData = ref(null);
 
@@ -721,6 +722,10 @@ const updateMapData = () => {
 };
 
 watch(selectedTripId, loadTripData, { immediate: true });
+watch(ebdUpdatedAt, async () => {
+  if (!selectedTripId.value) return;
+  await loadTripData(selectedTripId.value);
+});
 watch(selectedSpeciesCode, updateMapData);
 watch(hasTripData, (ready) => {
   if (ready) {

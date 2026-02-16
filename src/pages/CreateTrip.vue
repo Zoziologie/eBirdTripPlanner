@@ -4,6 +4,8 @@ import { db } from "../data/db";
 import Initiate from "../components/Initiate.vue";
 import LifeList from "../components/LifeList.vue";
 import { trips, selectedTripId, refreshTrips } from "../state/tripSelection";
+import { bumpEbdUpdatedAt } from "../state/ebdUpdates";
+import { resolveSpeciesTaxon, extractTaxonFields } from "../utils/taxonomy";
 
 const tripForm = ref({
   name: "",
@@ -111,7 +113,6 @@ const createTripFromProcessed = async (payload) => {
   const id = crypto.randomUUID();
   const tripName = buildUniqueTripName(payload?.region?.name);
   const safePayload = JSON.parse(JSON.stringify(payload));
-  console.log(safePayload);
   await db.trips.put({
     id,
     name: tripName,
@@ -127,6 +128,7 @@ const createTripFromProcessed = async (payload) => {
     filters: safePayload.filters,
     updatedAt: now,
   });
+  bumpEbdUpdatedAt();
   await loadTrips();
   selectedTripId.value = id;
   setSaveStatus("Trip created.");
@@ -153,11 +155,16 @@ const hasDuplicateRename = computed(() => {
 const speciesList = computed(() => processedData.value?.speciesList || []);
 const region = computed(() => processedData.value?.region || { code: "", name: "" });
 const totalSpeciesCount = computed(() => speciesList.value.length);
+const isTripConfirmedSpecies = (species) => species?.tripReportSeen === true;
+const isWorldTargetSpecies = (species) =>
+  species?.liferWorld === true && !isTripConfirmedSpecies(species);
+const isRegionTargetSpecies = (species) =>
+  species?.liferRegion === true && !isTripConfirmedSpecies(species);
 const newWorldCount = computed(
-  () => speciesList.value.filter((species) => species.liferWorld === true).length,
+  () => speciesList.value.filter((species) => isWorldTargetSpecies(species)).length,
 );
 const newRegionCount = computed(
-  () => speciesList.value.filter((species) => species.liferRegion === true).length,
+  () => speciesList.value.filter((species) => isRegionTargetSpecies(species)).length,
 );
 const newTripCount = computed(
   () => speciesList.value.filter((species) => species.tripReportSeen === false).length,
@@ -229,6 +236,7 @@ const handleSpeciesListUpdate = async (updatedList) => {
     speciesList: updatedList,
     updatedAt: Date.now(),
   });
+  bumpEbdUpdatedAt();
   setSaveStatus("Trip details updated.");
 };
 
@@ -273,6 +281,7 @@ const deleteTrip = async () => {
   await db.trips.delete(tripId);
   await db.ebd.where("tripId").equals(tripId).delete();
   await db.visits.where("tripId").equals(tripId).delete();
+  bumpEbdUpdatedAt();
   resetLocalState();
   await loadTrips();
   setSaveStatus("Trip deleted.");
@@ -300,6 +309,46 @@ const extractTripReportSpecies = (payload) => {
   return payload.species || payload.taxa || payload.taxons || payload.data || payload.list || [];
 };
 
+const normalizeTripReportEntry = (entry) => {
+  if (typeof entry === "string") {
+    const value = entry.trim();
+    if (!value) return null;
+    const looksLikeScientificName = value.includes(" ");
+    const resolvedTaxon = resolveSpeciesTaxon({
+      speciesCode: looksLikeScientificName ? "" : value,
+      scientificName: looksLikeScientificName ? value : "",
+    });
+    if (!resolvedTaxon) return null;
+    return {
+      code: resolvedTaxon.speciesCode || (looksLikeScientificName ? "" : value),
+      scientificName: resolvedTaxon.sciName || (looksLikeScientificName ? value : ""),
+      commonName: resolvedTaxon.comName || "",
+      taxonOrder: resolvedTaxon.taxonOrder ?? Infinity,
+    };
+  }
+
+  if (!entry || typeof entry !== "object") return null;
+  const { speciesCode, scientificName, commonName, category, reportAs } = extractTaxonFields(entry);
+
+  const resolvedTaxon = resolveSpeciesTaxon({
+    speciesCode,
+    scientificName,
+    category,
+    reportAs,
+  });
+  if (!resolvedTaxon) return null;
+
+  const rawTaxonOrder = Number(entry.taxonOrder ?? entry.taxon_order);
+  return {
+    code: resolvedTaxon.speciesCode || speciesCode || scientificName,
+    scientificName: resolvedTaxon.sciName || scientificName,
+    commonName: resolvedTaxon.comName || commonName,
+    taxonOrder: Number.isFinite(rawTaxonOrder)
+      ? rawTaxonOrder
+      : (resolvedTaxon.taxonOrder ?? Infinity),
+  };
+};
+
 const syncTripReportSpecies = async () => {
   const tripReportId = normalizeTripReportId(tripForm.value.tripReportId);
   if (!selectedTripId.value || !tripReportId) return;
@@ -316,38 +365,9 @@ const syncTripReportSpecies = async () => {
     if (!response.ok) throw new Error(`Trip report request failed: ${response.status}`);
     const payload = await response.json();
     const entries = extractTripReportSpecies(payload);
-    const codeSet = new Set();
-    const sciSet = new Set();
-    const prepared = entries.map((entry) => {
-      if (typeof entry === "string") {
-        const trimmed = entry.trim();
-        if (trimmed.includes(" ")) {
-          sciSet.add(trimmed);
-        } else {
-          codeSet.add(trimmed);
-        }
-        return { code: trimmed };
-      }
-      const code =
-        entry.speciesCode ||
-        entry.code ||
-        entry.species_code ||
-        entry.taxonCode ||
-        entry.taxon_code ||
-        entry.speciesId ||
-        entry.species_id ||
-        "";
-      const scientificName = entry.sciName || entry.scientificName || entry.scientific_name || "";
-      const commonName = entry.commonName || entry.comName || entry.common_name || "";
-      if (code) codeSet.add(code);
-      if (scientificName) sciSet.add(scientificName);
-      return {
-        code,
-        scientificName,
-        commonName,
-        taxonOrder: entry.taxonOrder ?? entry.taxon_order ?? Infinity,
-      };
-    });
+    const prepared = entries.map((entry) => normalizeTripReportEntry(entry)).filter(Boolean);
+    const codeSet = new Set(prepared.map((item) => item.code).filter(Boolean));
+    const sciSet = new Set(prepared.map((item) => item.scientificName).filter(Boolean));
 
     const existing = processedData.value?.speciesList || [];
     const nextList = existing.map((species) => {
@@ -386,6 +406,7 @@ const syncTripReportSpecies = async () => {
       speciesList: nextList,
       updatedAt: syncTimestamp,
     });
+    bumpEbdUpdatedAt();
     await db.trips.update(selectedTripId.value, { tripReportSyncedAt: syncTimestamp });
     lastTripReportSyncTime.value = syncTimestamp;
     tripReportStatus.value = "Trip report species synced.";
@@ -472,6 +493,7 @@ const importTrip = async (event) => {
         await db.lists.bulkPut(parsed.lists.map((item) => ({ ...item, tripId })));
       }
     });
+    bumpEbdUpdatedAt();
     await loadTrips();
     selectedTripId.value = tripId;
     transferStatus.value = "Trip imported.";

@@ -6,6 +6,7 @@ import "vue-select/dist/vue-select.css";
 import { db } from "../data/db";
 import { trips, selectedTripId, refreshTrips } from "../state/tripSelection";
 import { selectedVisitId } from "../state/visitSelection";
+import { ebdUpdatedAt } from "../state/ebdUpdates";
 
 const trip = ref(null);
 const ebd = ref(null);
@@ -239,6 +240,80 @@ const formatVisitTime = (value) => {
   });
 };
 
+const sanitizeFilename = (value) => {
+  const cleaned = (value || "")
+    .trim()
+    .replace(/[^a-z0-9]+/gi, "_")
+    .replace(/^_+|_+$/g, "");
+  return cleaned || "species";
+};
+
+const formatCsvNumber = (value) => {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return "";
+  return numeric.toFixed(4);
+};
+
+const escapeCsv = (value) => {
+  if (value === null || value === undefined) return "";
+  const text = String(value);
+  if (/[",\n]/.test(text)) {
+    return `"${text.replace(/"/g, "\"\"")}"`;
+  }
+  return text;
+};
+
+const exportSpeciesCsv = () => {
+  const rows = sortedSpecies.value || [];
+  const header = [
+    "code",
+    "commonName",
+    "scientificName",
+    "liferWorld",
+    "liferRegion",
+    "tripReportSeen",
+    "targetInterest",
+    "locationRank",
+    "locationRate",
+    "totalProbability",
+    "avgRate",
+    "overallRate",
+  ];
+  const lines = [header.join(",")];
+  rows.forEach((species) => {
+    const line = [
+      species.code || "",
+      species.commonName || "",
+      species.scientificName || "",
+      species.liferWorld === true ? "true" : species.liferWorld === false ? "false" : "",
+      species.liferRegion === true ? "true" : species.liferRegion === false ? "false" : "",
+      species.tripReportSeen === true ? "true" : species.tripReportSeen === false ? "false" : "",
+      isTargetSpecies(species.code) ? "true" : "false",
+      species.locationRank ?? "",
+      formatCsvNumber(species.locationRate),
+      formatCsvNumber(species.totalProbability),
+      formatCsvNumber(species.avgRate),
+      formatCsvNumber(species.overallRate),
+    ].map(escapeCsv);
+    lines.push(line.join(","));
+  });
+  const csv = `${lines.join("\n")}\n`;
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const tripLabel = sanitizeFilename(selectedTrip.value?.name || "trip");
+  const visitLabel = selectedLocationVisit.value
+    ? sanitizeFilename(`visit_${selectedLocationVisit.value.id}`)
+    : "all_locations";
+  const filename = `species-list_${tripLabel}_${visitLabel}.csv`;
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+};
+
 const selectedLocationVisit = computed(() => {
   return (
     visitsWithStats.value.find((visit) => String(visit.id) === String(selectedVisitId.value)) ||
@@ -258,6 +333,12 @@ const isTargetSpecies = (code) => {
   if (!code) return false;
   return targetSpeciesSet.value.has(code);
 };
+
+const isTripConfirmedSpecies = (species) => species?.tripReportSeen === true;
+const isLifeTargetSpecies = (species) =>
+  species?.liferWorld === true && !isTripConfirmedSpecies(species);
+const isRegionTargetSpecies = (species) =>
+  species?.liferRegion === true && !isTripConfirmedSpecies(species);
 
 const toggleTargetSpecies = async (code, checked) => {
   const visit = selectedLocationVisit.value;
@@ -309,12 +390,10 @@ const goNextVisit = () => {
 };
 
 const hasLifeColumn = computed(() =>
-  speciesList.value.some((species) => species.liferWorld === true || species.liferWorld === false),
+  speciesList.value.some((species) => isLifeTargetSpecies(species)),
 );
 const hasRegionColumn = computed(() =>
-  speciesList.value.some(
-    (species) => species.liferRegion === true || species.liferRegion === false,
-  ),
+  speciesList.value.some((species) => isRegionTargetSpecies(species)),
 );
 const hasTripReportColumn = computed(() =>
   speciesList.value.some(
@@ -352,8 +431,8 @@ const sortIcon = (key) => {
 const sortedSpecies = computed(() => {
   const list = speciesWithProbabilities.value.filter((species) => {
     if (hasActiveLiferFilter.value) {
-      const matchesLife = liferFilters.value.life && species.liferWorld === true;
-      const matchesRegion = liferFilters.value.region && species.liferRegion === true;
+      const matchesLife = liferFilters.value.life && isLifeTargetSpecies(species);
+      const matchesRegion = liferFilters.value.region && isRegionTargetSpecies(species);
       const matchesTrip = liferFilters.value.trip && species.tripReportSeen === false;
       const matchesInterest = liferFilters.value.interest && isTargetSpecies(species.code);
       if (!matchesLife && !matchesRegion && !matchesTrip && !matchesInterest) return false;
@@ -402,12 +481,12 @@ const sortedSpecies = computed(() => {
     }
     if (sortKey.value === "lifer") {
       const aScore =
-        (a.liferWorld === true ? 1 : 0) +
-        (a.liferRegion === true ? 1 : 0) +
+        (isLifeTargetSpecies(a) ? 1 : 0) +
+        (isRegionTargetSpecies(a) ? 1 : 0) +
         (a.tripReportSeen === false ? 1 : 0);
       const bScore =
-        (b.liferWorld === true ? 1 : 0) +
-        (b.liferRegion === true ? 1 : 0) +
+        (isLifeTargetSpecies(b) ? 1 : 0) +
+        (isRegionTargetSpecies(b) ? 1 : 0) +
         (b.tripReportSeen === false ? 1 : 0);
       return (aScore - bScore) * dir;
     }
@@ -451,6 +530,10 @@ const getSpeciesMapUrl = (code) => {
 };
 
 watch(selectedTripId, loadTripData, { immediate: true });
+watch(ebdUpdatedAt, async () => {
+  if (!selectedTripId.value) return;
+  await loadTripData(selectedTripId.value);
+});
 onMounted(async () => {
   await refreshTrips();
   if (selectedTripId.value && !trip.value) {
@@ -602,6 +685,18 @@ watch(selectedTripId, () => {
                 />
                 <span class="small">{{ formatPercent(locationMinRate) }}</span>
               </div>
+            </div>
+            <div class="ms-auto">
+              <button
+                class="btn btn-outline-secondary btn-sm"
+                type="button"
+                @click="exportSpeciesCsv"
+                :disabled="!sortedSpecies.length"
+                aria-label="Export species list to CSV"
+              >
+                <i class="bi bi-filetype-csv me-1"></i>
+                Export CSV
+              </button>
             </div>
           </div>
 
@@ -761,12 +856,12 @@ watch(selectedTripId, () => {
                       </span>
                       <span class="d-inline-flex align-items-center gap-1">
                         <i
-                          v-if="species.liferWorld === true"
+                          v-if="isLifeTargetSpecies(species)"
                           class="bi bi-globe2 text-danger species-target-icon"
                           title="Not yet seen in life list"
                         ></i>
                         <i
-                          v-else-if="species.liferRegion === true"
+                          v-else-if="isRegionTargetSpecies(species)"
                           class="bi bi-geo-alt-fill text-danger species-target-icon species-target-icon--region"
                           title="Not yet seen in region list"
                         ></i>

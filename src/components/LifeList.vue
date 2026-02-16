@@ -206,6 +206,7 @@
 <script>
 import { ref, computed } from "vue";
 import Papa from "papaparse";
+import { resolveSpeciesTaxon, extractTaxonFields, isCountableTaxon } from "../utils/taxonomy";
 
 export default {
   props: {
@@ -279,18 +280,27 @@ export default {
           header: true,
           skipEmptyLines: true,
           complete: (results) => {
-            const codes = new Set();
+            const scientificNames = new Set();
 
             results.data.forEach((row) => {
-              if (row["Scientific Name"] && row["Countable"] === "1") {
-                const scientificName = row["Scientific Name"].trim();
-                if (scientificName) {
-                  codes.add(scientificName);
-                }
+              if (!isCountableTaxon(row)) return;
+              const { speciesCode, scientificName, category, reportAs } = extractTaxonFields(row);
+
+              const resolvedTaxon = resolveSpeciesTaxon({
+                speciesCode,
+                scientificName,
+                category,
+                reportAs,
+              });
+              if (!resolvedTaxon) return;
+
+              const canonicalName = resolvedTaxon.sciName || scientificName;
+              if (canonicalName) {
+                scientificNames.add(canonicalName);
               }
             });
 
-            resolve(codes);
+            resolve(scientificNames);
           },
           error: (error) => {
             reject(error);
