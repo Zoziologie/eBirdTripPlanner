@@ -495,6 +495,70 @@ const sortedSpecies = computed(() => {
   return list;
 });
 
+const getExpectedProbability = (species) => {
+  const rawValue = locationFiltersActive.value ? species.locationRate : species.totalProbability;
+  const value = Number(rawValue);
+  if (!Number.isFinite(value)) return 0;
+  return Math.min(Math.max(value, 0), 1);
+};
+
+const expectedSummary = computed(() => {
+  const summary = {
+    total: 0,
+    life: 0,
+    region: 0,
+    trip: 0,
+  };
+
+  speciesWithProbabilities.value.forEach((species) => {
+    const expected = getExpectedProbability(species);
+    summary.total += expected;
+    if (isLifeTargetSpecies(species)) summary.life += expected;
+    if (isRegionTargetSpecies(species)) summary.region += expected;
+    if (species.tripReportSeen === false) summary.trip += expected;
+  });
+
+  return summary;
+});
+
+const expectedSummaryItems = computed(() => {
+  const items = [
+    {
+      key: "total",
+      label: "Total",
+      value: expectedSummary.value.total,
+    },
+  ];
+  if (hasLifeColumn.value) {
+    items.push({
+      key: "life",
+      label: "Life",
+      value: expectedSummary.value.life,
+    });
+  }
+  if (hasRegionColumn.value) {
+    items.push({
+      key: "region",
+      label: "Region",
+      value: expectedSummary.value.region,
+    });
+  }
+  if (hasTripReportColumn.value && locationFiltersActive.value) {
+    items.push({
+      key: "trip",
+      label: "Trip",
+      value: expectedSummary.value.trip,
+    });
+  }
+  return items;
+});
+
+const formatExpectedCount = (value) => {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return "0.0";
+  return numeric.toFixed(1);
+};
+
 const getSpeciesMapUrl = (code) => {
   if (!code) return "";
   const bounds = (locations.value || []).reduce(
@@ -566,15 +630,15 @@ watch(selectedTripId, () => {
     <div class="col-12" v-if="trip">
       <div class="card">
         <div class="card-body">
-          <div class="mb-3 d-flex align-items-center gap-2">
+          <div class="mb-3 visit-selector-row">
             <button
-              class="btn btn-outline-secondary btn-sm location-nav-btn"
+              class="btn btn-outline-secondary btn-sm location-nav-btn location-nav-btn--prev"
               type="button"
               @click="goPrevVisit"
               :disabled="!visitsWithStats.length"
               aria-label="Previous location"
             >
-              &lt;
+              <i class="bi bi-chevron-left"></i>
             </button>
             <v-select
               v-model="selectedVisitId"
@@ -587,20 +651,20 @@ watch(selectedTripId, () => {
               class="location-select-control flex-grow-1"
             >
               <template #option="{ label }">
-                <div class="small">{{ label }}</div>
+                <div class="small visit-option-label" :title="label">{{ label }}</div>
               </template>
               <template #selected-option="{ label }">
-                <span class="small">{{ label }}</span>
+                <span class="small visit-selected-label" :title="label">{{ label }}</span>
               </template>
             </v-select>
             <button
-              class="btn btn-outline-secondary btn-sm location-nav-btn"
+              class="btn btn-outline-secondary btn-sm location-nav-btn location-nav-btn--next"
               type="button"
               @click="goNextVisit"
               :disabled="!visitsWithStats.length"
               aria-label="Next location"
             >
-              &gt;
+              <i class="bi bi-chevron-right"></i>
             </button>
           </div>
 
@@ -685,18 +749,6 @@ watch(selectedTripId, () => {
                 />
                 <span class="small">{{ formatPercent(locationMinRate) }}</span>
               </div>
-            </div>
-            <div class="ms-auto">
-              <button
-                class="btn btn-outline-secondary btn-sm"
-                type="button"
-                @click="exportSpeciesCsv"
-                :disabled="!sortedSpecies.length"
-                aria-label="Export species list to CSV"
-              >
-                <i class="bi bi-filetype-csv me-1"></i>
-                Export CSV
-              </button>
             </div>
           </div>
 
@@ -891,6 +943,47 @@ watch(selectedTripId, () => {
               </tbody>
             </table>
           </div>
+          <div class="expected-summary mt-3 pt-3 border-top" v-if="speciesWithProbabilities.length">
+            <div class="expected-summary-row">
+              <div class="expected-summary-stats small">
+                <div class="expected-summary-lead fw-semibold">
+                  Expected Number of species (sum of prob.):
+                </div>
+                <div class="expected-summary-values">
+                  <template v-for="(item, index) in expectedSummaryItems" :key="item.key">
+                    <span
+                      class="expected-summary-pill"
+                      :class="{
+                        'expected-summary-pill--primary': item.key === 'total',
+                        'expected-summary-pill--alert': item.key !== 'total',
+                      }"
+                    >
+                      <span class="expected-summary-pill-label">{{ item.label }}:</span>
+                      <span class="expected-summary-pill-value">{{
+                        formatExpectedCount(item.value)
+                      }}</span>
+                    </span>
+                    <span
+                      v-if="index < expectedSummaryItems.length - 1"
+                      class="expected-summary-sep"
+                      aria-hidden="true"
+                      >·</span
+                    >
+                  </template>
+                </div>
+              </div>
+              <button
+                class="btn btn-outline-secondary btn-sm expected-summary-export"
+                type="button"
+                @click="exportSpeciesCsv"
+                :disabled="!sortedSpecies.length"
+                aria-label="Export species list to CSV"
+              >
+                <i class="bi bi-filetype-csv me-1"></i>
+                Export CSV
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -898,6 +991,17 @@ watch(selectedTripId, () => {
 </template>
 
 <style scoped>
+.visit-selector-row {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) 44px;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.location-select-control {
+  min-width: 0;
+}
+
 .location-select-control :deep(.vs__dropdown-toggle) {
   min-height: 40px;
   padding: 4px 10px;
@@ -915,6 +1019,9 @@ watch(selectedTripId, () => {
   padding: 2px 6px;
   font-size: 0.75rem;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 
 .location-select-control :deep(.vs__search) {
@@ -927,15 +1034,33 @@ watch(selectedTripId, () => {
   max-height: 200px;
 }
 
+.visit-option-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.visit-selected-label {
+  display: inline-block;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .location-nav-btn {
-  height: 40px;
-  width: 40px;
+  height: 44px;
+  width: 44px;
+  min-height: 44px;
+  min-width: 44px;
+  flex: 0 0 44px;
   border-radius: 10px;
   border-color: var(--bs-border-color);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   padding: 0;
+  font-size: 1rem;
 }
 .filter-sliders {
   flex: 1;
@@ -1005,6 +1130,79 @@ watch(selectedTripId, () => {
 
 .species-row--target:hover td {
   background-color: #ffe8a1;
+}
+
+.expected-summary {
+  background: #f8fafc;
+  border-radius: 10px;
+  padding: 0.75rem 0.9rem;
+}
+
+.expected-summary-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.expected-summary-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.expected-summary-lead {
+  color: #415266;
+}
+
+.expected-summary-values {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  font-size: 0.95rem;
+  line-height: 1.35;
+}
+
+.expected-summary-pill {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.25rem;
+  padding: 0.08rem 0.5rem;
+  border-radius: 999px;
+  background: #e9eff5;
+  color: #2f4153;
+}
+
+.expected-summary-pill--primary {
+  font-size: 1.06em;
+  font-weight: 700;
+  background: #dbeaf7;
+  color: #1f3d56;
+}
+
+.expected-summary-pill--alert {
+  background: #fff0f0;
+  color: #9b1c1c;
+}
+
+.expected-summary-pill-label {
+  font-weight: 600;
+}
+
+.expected-summary-pill-value {
+  font-variant-numeric: tabular-nums;
+}
+
+.expected-summary-sep {
+  color: #7c8a99;
+  line-height: 1;
+}
+
+.expected-summary-export {
+  justify-self: end;
+  white-space: nowrap;
 }
 
 @media (max-width: 575.98px) {
