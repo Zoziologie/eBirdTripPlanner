@@ -50,6 +50,11 @@ const lastTripReportSyncTime = ref(null);
 const installPromptEvent = ref(null);
 const isPwaInstalled = ref(false);
 const canInstallPwa = computed(() => Boolean(installPromptEvent.value) && !isPwaInstalled.value);
+const appVersion = __APP_VERSION__;
+const repoUrl = "https://github.com/Zoziologie/eBirdTripPlanner";
+const sponsorUrl = "https://github.com/sponsors/Zoziologie";
+const zoziologieUrl = "https://zoziologie.raphaelnussbaumer.com/";
+const zoziologieLogoUrl = "https://zoziologie.raphaelnussbaumer.com/assets/logo_w.svg";
 
 const formatSyncTimestamp = (value) => {
   if (!value) return "";
@@ -383,9 +388,7 @@ const formatSpeciesLabel = (species) => {
   const scientific = (species?.scientificName || "").trim();
   const code = (species?.code || "").trim();
   const base =
-    common && scientific
-      ? `${common} (${scientific})`
-      : common || scientific || "Unknown species";
+    common && scientific ? `${common} (${scientific})` : common || scientific || "Unknown species";
   return code ? `${base} [${code}]` : base;
 };
 
@@ -636,9 +639,29 @@ const importTrip = async (event) => {
 </script>
 
 <template>
+  <div class="row g-4 mt-1" v-if="!selectedTripId">
+    <div class="col-12">
+      <div class="card border-primary bg-primary-subtle">
+        <div class="card-body py-3">
+          <h5 class="card-title text-primary mb-2">
+            <i class="bi bi-compass-fill me-2"></i>
+            Welcome to eBird Trip Planner
+          </h5>
+          <p class="mb-2">
+            Turn raw eBird data into a real game plan. Load your EBD export, shape it into a trip,
+            and quickly see where your best species chances are.
+          </p>
+          <p class="mb-0 small text-muted">
+            Goal: help you bird smarter, not harder. Build trips, track targets, sync life lists and
+            trip reports, and focus your field time on species that matter most.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
   <div class="row g-4 mt-1">
     <div class="col-lg-6">
-      <div class="card mb-3">
+      <div class="card mb-3" v-if="trips.length">
         <div class="card-body">
           <div class="d-flex align-items-center justify-content-between gap-2">
             <h5 class="card-title mb-0">Select active trip</h5>
@@ -655,42 +678,40 @@ const importTrip = async (event) => {
           <p class="text-muted small mb-2">
             Choose the trip you want to manage. This selection updates the header indicator.
           </p>
-          <div v-if="trips.length">
-            <select
-              v-model="selectedTripId"
-              class="form-select"
-              aria-label="Select the trip you want to edit"
-            >
-              <option v-if="!trips.length" value="" disabled selected>Select a trip</option>
-              <option v-for="trip in trips" :key="trip.id" :value="trip.id">
-                {{ trip.name }}
-              </option>
-            </select>
-            <div class="form-text text-muted small mt-1">
-              Trip actions below apply to the selected trip.
-            </div>
-            <div class="d-flex align-items-center gap-2 mt-3 flex-wrap" v-if="selectedTripId">
-              <button class="btn btn-outline-secondary btn-sm flex-fill" @click="openRenameModal">
-                <i class="bi bi-pencil-square me-1"></i>
-                Rename
-              </button>
-              <button
-                class="btn btn-outline-primary btn-sm flex-fill"
-                @click="exportTrip"
-                :disabled="!selectedTripId || isExporting"
-              >
-                <span v-if="isExporting" class="spinner-border spinner-border-sm me-1"></span>
-                <i v-else class="bi bi-download me-1"></i>
-                Export
-              </button>
-              <button class="btn btn-outline-secondary btn-sm flex-fill text-danger" @click="deleteTrip">
-                <i class="bi bi-trash3 me-1"></i>
-                Delete
-              </button>
-            </div>
+          <select
+            v-model="selectedTripId"
+            class="form-select"
+            aria-label="Select the trip you want to edit"
+          >
+            <option v-if="!trips.length" value="" disabled selected>Select a trip</option>
+            <option v-for="trip in trips" :key="trip.id" :value="trip.id">
+              {{ trip.name }}
+            </option>
+          </select>
+          <div class="form-text text-muted small mt-1">
+            Trip actions below apply to the selected trip.
           </div>
-          <div v-else class="text-muted small">
-            Create or import a trip below before selecting one here.
+          <div class="d-flex align-items-center gap-2 mt-3 flex-wrap" v-if="selectedTripId">
+            <button class="btn btn-outline-secondary btn-sm flex-fill" @click="openRenameModal">
+              <i class="bi bi-pencil-square me-1"></i>
+              Rename
+            </button>
+            <button
+              class="btn btn-outline-primary btn-sm flex-fill"
+              @click="exportTrip"
+              :disabled="!selectedTripId || isExporting"
+            >
+              <span v-if="isExporting" class="spinner-border spinner-border-sm me-1"></span>
+              <i v-else class="bi bi-download me-1"></i>
+              Export
+            </button>
+            <button
+              class="btn btn-outline-secondary btn-sm flex-fill text-danger"
+              @click="deleteTrip"
+            >
+              <i class="bi bi-trash3 me-1"></i>
+              Delete
+            </button>
           </div>
         </div>
       </div>
@@ -715,100 +736,131 @@ const importTrip = async (event) => {
       </div>
     </div>
 
-    <div class="col-lg-6">
+    <div class="col-lg-6" v-if="selectedTripId">
       <div class="card">
         <div class="card-body">
           <h5 class="card-title">Targets</h5>
           <p class="text-muted small mb-1">
             Sync life lists and trip reports to flag world, region, and trip targets.
           </p>
-          <div v-if="selectedTripId">
-            <LifeList
-              variant="targets"
-              :showSummary="false"
-              :speciesList="speciesList"
-              :region="region"
-              @update:speciesList="handleSpeciesListUpdate"
-            />
-            <div class="row g-2 align-items-start mt-3">
-              <div class="col-md-3">
-                <label class="form-label fw-semibold mb-1">
-                  <a
-                    class="text-decoration-none"
-                    href="https://ebird.org/mytripreports"
-                    target="_blank"
-                    rel="noopener"
-                  >
-                    <i class="bi bi-car-front-fill text-danger me-1"></i>
-                    Trip report
-                  </a>
-                </label>
-                <div class="text-muted small">
-                  Paste the trip report ID to mark species seen on this trip.
-                </div>
-              </div>
-              <div class="col-md-9">
-                <div class="input-group">
-                  <span class="input-group-text">https://ebird.org/tripreport/</span>
-                  <input
-                    v-model="tripForm.tripReportId"
-                    class="form-control"
-                    @input="persistTripReportId"
-                  />
-                  <button
-                    class="btn btn-outline-secondary"
-                    type="button"
-                    @click="syncTripReportSpecies"
-                    :disabled="!tripForm.tripReportId || isSyncingTripReport"
-                    aria-label="Sync trip report species list"
-                  >
-                    <span
-                      v-if="isSyncingTripReport"
-                      class="spinner-border spinner-border-sm"
-                    ></span>
-                    <i v-else class="bi bi-arrow-repeat"></i>
-                  </button>
-                </div>
-                <div
-                  v-if="tripReportAlertMessage"
-                  class="alert py-2 px-3 mt-2 mb-0 small d-flex align-items-center"
-                  :class="`alert-${tripReportAlertVariant}`"
+          <LifeList
+            variant="targets"
+            :showSummary="false"
+            :speciesList="speciesList"
+            :region="region"
+            @update:speciesList="handleSpeciesListUpdate"
+          />
+          <div class="row g-2 align-items-start mt-3">
+            <div class="col-md-3">
+              <label class="form-label fw-semibold mb-1">
+                <a
+                  class="text-decoration-none"
+                  href="https://ebird.org/mytripreports"
+                  target="_blank"
+                  rel="noopener"
                 >
-                  <i class="bi me-2" :class="tripReportAlertIcon"></i>
-                  <div>
-                    <div>{{ tripReportAlertMessage }}</div>
-                    <div class="text-muted small" v-if="showLastSyncLabel">
-                      Last synced: {{ formatSyncTimestamp(lastTripReportSyncTime) }}
-                    </div>
+                  <i class="bi bi-car-front-fill text-danger me-1"></i>
+                  Trip report
+                </a>
+              </label>
+              <div class="text-muted small">
+                Paste the trip report ID to mark species seen on this trip.
+              </div>
+            </div>
+            <div class="col-md-9">
+              <div class="input-group">
+                <span class="input-group-text">https://ebird.org/tripreport/</span>
+                <input
+                  v-model="tripForm.tripReportId"
+                  class="form-control"
+                  @input="persistTripReportId"
+                />
+                <button
+                  class="btn btn-outline-secondary"
+                  type="button"
+                  @click="syncTripReportSpecies"
+                  :disabled="!tripForm.tripReportId || isSyncingTripReport"
+                  aria-label="Sync trip report species list"
+                >
+                  <span v-if="isSyncingTripReport" class="spinner-border spinner-border-sm"></span>
+                  <i v-else class="bi bi-arrow-repeat"></i>
+                </button>
+              </div>
+              <div
+                v-if="tripReportAlertMessage"
+                class="alert py-2 px-3 mt-2 mb-0 small d-flex align-items-center"
+                :class="`alert-${tripReportAlertVariant}`"
+              >
+                <i class="bi me-2" :class="tripReportAlertIcon"></i>
+                <div>
+                  <div>{{ tripReportAlertMessage }}</div>
+                  <div class="text-muted small" v-if="showLastSyncLabel">
+                    Last synced: {{ formatSyncTimestamp(lastTripReportSyncTime) }}
                   </div>
                 </div>
               </div>
             </div>
-            <div v-if="totalSpeciesCount" class="mt-3 pt-2 border-top">
-              <div class="d-flex flex-wrap gap-3 small">
-                <div><strong>Total Species (EBD):</strong> {{ totalSpeciesCount }}</div>
-                <div>
-                  <strong>New for World:</strong>
-                  <span class="text-danger fw-semibold ms-1">{{ newWorldCount }}</span>
-                </div>
-                <div>
-                  <strong>New for Region:</strong>
-                  <span class="text-danger fw-semibold ms-1">{{ newRegionCount }}</span>
-                </div>
-                <div>
-                  <strong>New for Trip:</strong>
-                  <span class="text-danger fw-semibold ms-1">{{ newTripCount }}</span>
-                </div>
+          </div>
+          <div v-if="totalSpeciesCount" class="mt-3 pt-2 border-top">
+            <div class="d-flex flex-wrap gap-3 small">
+              <div><strong>Total Species (EBD):</strong> {{ totalSpeciesCount }}</div>
+              <div>
+                <strong>New for World:</strong>
+                <span class="text-danger fw-semibold ms-1">{{ newWorldCount }}</span>
+              </div>
+              <div>
+                <strong>New for Region:</strong>
+                <span class="text-danger fw-semibold ms-1">{{ newRegionCount }}</span>
+              </div>
+              <div>
+                <strong>New for Trip:</strong>
+                <span class="text-danger fw-semibold ms-1">{{ newTripCount }}</span>
               </div>
             </div>
-          </div>
-          <div v-else class="text-muted mt-3">
-            Select an active trip from the left card to manage targets.
           </div>
         </div>
       </div>
     </div>
   </div>
+  <footer class="tech-footer mt-4">
+    <div class="tech-footer-links d-flex flex-wrap align-items-center justify-content-center gap-2 small text-muted">
+      <span>v{{ appVersion }}</span>
+      <span class="tech-footer-divider">•</span>
+      <a
+        :href="repoUrl"
+        target="_blank"
+        rel="noopener"
+        class="text-decoration-none text-reset d-inline-flex align-items-center gap-1"
+      >
+        <i class="bi bi-github"></i>
+        <span>GitHub</span>
+      </a>
+      <span class="tech-footer-divider">•</span>
+      <a
+        :href="sponsorUrl"
+        target="_blank"
+        rel="noopener"
+        class="text-decoration-none text-reset d-inline-flex align-items-center gap-1"
+      >
+        <i class="bi bi-heart-fill text-danger"></i>
+        <span>Sponsor</span>
+      </a>
+      <span class="tech-footer-divider">•</span>
+      <a
+        :href="zoziologieUrl"
+        target="_blank"
+        rel="noopener"
+        class="text-decoration-none text-reset d-inline-flex align-items-center gap-1"
+        title="Zoziologie"
+      >
+        <span>Powered by</span>
+        <span class="zoziologie-logo-wrap">
+          <img :src="zoziologieLogoUrl" alt="Zoziologie Logo" class="zoziologie-logo" />
+        </span>
+        <span class="fw-semibold">Zoziologie</span>
+      </a>
+    </div>
+  </footer>
 
   <div v-if="isRenameModalOpen">
     <div
@@ -850,3 +902,31 @@ const importTrip = async (event) => {
     <div class="modal-backdrop fade show"></div>
   </div>
 </template>
+
+<style scoped>
+.tech-footer {
+  width: 100%;
+  padding: 10px 2px 0;
+  border-top: 1px solid var(--bs-border-color);
+}
+
+.tech-footer-divider {
+  opacity: 0.6;
+}
+
+.zoziologie-logo-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 6px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #2c3e50 0%, #3f5f78 100%);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.zoziologie-logo {
+  height: 14px;
+  width: auto;
+  display: block;
+}
+</style>
