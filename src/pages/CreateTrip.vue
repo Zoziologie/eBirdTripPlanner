@@ -6,6 +6,7 @@ import LifeList from "../components/LifeList.vue";
 import { trips, selectedTripId, refreshTrips } from "../state/tripSelection";
 import { bumpEbdUpdatedAt } from "../state/ebdUpdates";
 import { resolveSpeciesTaxon, extractTaxonFields } from "../utils/taxonomy";
+import zoziologieLogoUrl from "../assets/zoziologie-logo.svg";
 
 const tripForm = ref({
   name: "",
@@ -54,7 +55,6 @@ const appVersion = __APP_VERSION__;
 const repoUrl = "https://github.com/Zoziologie/eBirdTripPlanner";
 const sponsorUrl = "https://github.com/sponsors/Zoziologie";
 const zoziologieUrl = "https://zoziologie.raphaelnussbaumer.com/";
-const zoziologieLogoUrl = "https://zoziologie.raphaelnussbaumer.com/assets/logo_w.svg";
 
 const formatSyncTimestamp = (value) => {
   if (!value) return "";

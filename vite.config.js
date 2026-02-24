@@ -15,8 +15,66 @@ export default defineConfig({
     vue(),
     VitePWA({
       registerType: "autoUpdate",
-      includeAssets: ["favicon.ico", "pwa-192.png", "pwa-512.png"],
       workbox: {
+        globPatterns: [
+          "**/*.{js,css,html,ico,png,svg,webmanifest,woff,woff2,jpg,jpeg,gif,webp,avif,json}",
+        ],
+        runtimeCaching: [
+          {
+            urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
+            handler: "StaleWhileRevalidate",
+            options: {
+              cacheName: "google-fonts-stylesheets",
+              expiration: {
+                maxEntries: 10,
+                maxAgeSeconds: 60 * 60 * 24 * 365,
+              },
+            },
+          },
+          {
+            urlPattern: /^https:\/\/fonts\.gstatic\.com\/.*/i,
+            handler: "CacheFirst",
+            options: {
+              cacheName: "google-fonts-webfonts",
+              cacheableResponse: {
+                statuses: [0, 200],
+              },
+              expiration: {
+                maxEntries: 30,
+                maxAgeSeconds: 60 * 60 * 24 * 365,
+              },
+            },
+          },
+          {
+            urlPattern: /^https:\/\/api\.mapbox\.com\/directions\/v5\/.*/i,
+            handler: "NetworkFirst",
+            options: {
+              cacheName: "mapbox-directions",
+              networkTimeoutSeconds: 5,
+              cacheableResponse: {
+                statuses: [0, 200],
+              },
+              expiration: {
+                maxEntries: 100,
+                maxAgeSeconds: 60 * 60 * 24 * 7,
+              },
+            },
+          },
+          {
+            urlPattern: /^https:\/\/(?:api\.mapbox\.com|.*\.tiles\.mapbox\.com)\/.*/i,
+            handler: "StaleWhileRevalidate",
+            options: {
+              cacheName: "mapbox-resources",
+              cacheableResponse: {
+                statuses: [0, 200],
+              },
+              expiration: {
+                maxEntries: 500,
+                maxAgeSeconds: 60 * 60 * 24 * 14,
+              },
+            },
+          },
+        ],
         maximumFileSizeToCacheInBytes: 10 * 1024 * 1024, // 10 MB
       },
       manifest: {
