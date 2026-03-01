@@ -5,7 +5,7 @@ import "mapbox-gl/dist/mapbox-gl.css";
 import * as turf from "@turf/turf";
 import vSelect from "vue-select";
 import "vue-select/dist/vue-select.css";
-import { db } from "../data/db";
+import { useTripBundleLoader } from "../composables/useTripBundleLoader";
 import { trips, selectedTripId, refreshTrips } from "../state/tripSelection";
 import { ebdUpdatedAt } from "../state/ebdUpdates";
 
@@ -41,6 +41,7 @@ const isSatellite = computed({
       : "mapbox://styles/mapbox/outdoors-v12";
   },
 });
+const { loadTripBundle, resetTripBundleLoader } = useTripBundleLoader({ includeEbd: true });
 
 mapboxgl.accessToken = "pk.eyJ1IjoicmFmbnVzcyIsImEiOiIzMVE1dnc0In0.3FNMKIlQ_afYktqki-6m0g";
 
@@ -339,6 +340,7 @@ const showClusterPopup = (feature) => {
 
 const loadTripData = async (tripId) => {
   if (!tripId) {
+    resetTripBundleLoader();
     tripData.value = null;
     speciesList.value = [];
     locations.value = [];
@@ -348,7 +350,9 @@ const loadTripData = async (tripId) => {
     selectedSpeciesCode.value = "";
     return;
   }
-  tripData.value = await db.ebd.where("tripId").equals(tripId).first();
+  const { bundle, isCurrent } = await loadTripBundle(tripId);
+  if (!isCurrent) return;
+  tripData.value = bundle.ebd;
   speciesList.value = tripData.value?.speciesList || [];
   locations.value = tripData.value?.locations || [];
   region.value = tripData.value?.region || { code: "", name: "" };
@@ -538,21 +542,21 @@ const setupMapLayers = () => {
         "circle-color": [
           "case",
           ["==", ["get", "color_value"], 0],
-          "#d6d9de",
+          "#dce8e4",
           [
             "interpolate",
             ["linear"],
             ["get", "color_value"],
             0,
-            "#00c853",
+            "#418440",
             0.3,
-            "#8bc34a",
+            "#6c9f3c",
             0.6,
-            "#ffd54f",
+            "#f8ae1c",
             0.8,
-            "#ff8a65",
+            "#e67e22",
             1,
-            "#d32f2f",
+            "#07464e",
           ],
         ],
         "circle-stroke-color": "#ffffff",
@@ -757,9 +761,6 @@ watch(
 
 onMounted(async () => {
   await refreshTrips();
-  if (selectedTripId.value && !tripData.value) {
-    await loadTripData(selectedTripId.value);
-  }
   nextTick(initMap);
 });
 </script>
@@ -827,7 +828,7 @@ onMounted(async () => {
                 :clearable="true"
                 :searchable="true"
                 placeholder="Search species"
-                class="species-select"
+                class="species-select app-vselect app-vselect--comfortable"
                 @update:modelValue="updateSelectedSpecies"
               >
                 <template #option="{ commonName, scientificName, code }">
@@ -924,43 +925,15 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-.species-select :deep(.vs__dropdown-toggle) {
-  min-height: 44px;
-  padding: 6px 12px;
-  border-radius: 10px;
-  background: #ffffff;
-  display: flex;
-  align-items: center;
-  font-size: 1rem;
-}
-
 .species-select :deep(.vs__selected-options) {
   flex-wrap: nowrap;
   overflow: hidden;
-  gap: 4px;
   align-items: center;
 }
 
 .species-select :deep(.vs__selected) {
-  margin: 0;
   padding: 2px 6px;
-  font-size: 0.95rem;
   white-space: nowrap;
-}
-
-.species-select :deep(.vs__search) {
-  margin: 0;
-  padding: 0;
-  font-size: 1rem;
-}
-
-.species-select :deep(.vs__actions) {
-  display: flex;
-  align-items: center;
-}
-
-.species-select :deep(.vs__dropdown-menu) {
-  max-height: 240px;
 }
 
 .species-map-panel {
@@ -1004,13 +977,13 @@ onMounted(async () => {
   border-radius: 999px;
   background: linear-gradient(
     90deg,
-    #d6d9de 0%,
-    #d6d9de 1%,
-    #00c853 1%,
-    #8bc34a 30%,
-    #ffd54f 60%,
-    #ff8a65 80%,
-    #d32f2f 100%
+    #dce8e4 0%,
+    #dce8e4 1%,
+    #418440 1%,
+    #6c9f3c 30%,
+    #f8ae1c 60%,
+    #e67e22 80%,
+    #07464e 100%
   );
   border: 1px solid rgba(0, 0, 0, 0.08);
 }

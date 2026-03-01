@@ -4,13 +4,16 @@ import vSelect from "vue-select";
 import "vue-select/dist/vue-select.css";
 import mapboxgl from "mapbox-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
+import MapboxGeocoder from "@mapbox/mapbox-gl-geocoder";
+import "@mapbox/mapbox-gl-geocoder/dist/mapbox-gl-geocoder.css";
 import * as turf from "@turf/turf";
+import { useTripBundleLoader } from "../composables/useTripBundleLoader";
 import { db } from "../data/db";
-import { trips, selectedTripId, refreshTrips } from "../state/tripSelection";
+import { selectedTripId, refreshTrips } from "../state/tripSelection";
 import { selectedVisitId } from "../state/visitSelection";
+import { resolveRecordConflict, withUpdatedAt } from "../utils/recordConflicts";
 
 const tripData = ref(null);
-const tripInfo = ref(null);
 const locations = ref([]);
 const visits = ref([]);
 
@@ -28,14 +31,17 @@ const addingVisit = ref(false);
 const nameNeedsUpdate = ref(false);
 
 const mapContainer = ref(null);
+const locationSearchContainer = ref(null);
 let map = null;
 let mapLoaded = false;
+let locationSearchControl = null;
 let locationPopup = null;
 const locationPopupLocked = ref(false);
 let visitPopup = null;
 let selectedVisitMarker = null;
 let radiusMarkers = [];
 let nonBirdingMarkers = [];
+let searchHighlightTimer = null;
 const radiusBearings = [0, 90, 180, 270];
 const isDraggingRadius = ref(false);
 const previewRadiusKm = ref(null);
@@ -55,6 +61,7 @@ const isMobilePanelOpen = ref(false);
 const itinerarySplitPercent = ref(60);
 const isDraggingSplit = ref(false);
 let geolocateControl = null;
+const searchHighlightCoords = ref(null);
 const isSatellite = computed({
   get: () => mapStyle.value === "mapbox://styles/mapbox/satellite-streets-v12",
   set: (value) => {
@@ -62,6 +69,10 @@ const isSatellite = computed({
       ? "mapbox://styles/mapbox/satellite-streets-v12"
       : "mapbox://styles/mapbox/outdoors-v12";
   },
+});
+const { loadTripBundle, resetTripBundleLoader } = useTripBundleLoader({
+  includeEbd: true,
+  includeVisits: true,
 });
 
 mapboxgl.accessToken = "pk.eyJ1IjoicmFmbnVzcyIsImEiOiIzMVE1dnc0In0.3FNMKIlQ_afYktqki-6m0g";
@@ -119,9 +130,6 @@ const saveMapState = () => {
   localStorage.setItem(key, JSON.stringify(payload));
 };
 
-const selectedTrip = computed(
-  () => trips.value.find((trip) => trip.id === selectedTripId.value) || null,
-);
 const selectedVisit = computed(
   () => visits.value.find((visit) => String(visit.id) === String(selectedVisitId.value)) || null,
 );
@@ -183,6 +191,43 @@ const locationMeta = computed(() => {
         lat,
         checklistCount: toNumber(location.checklist_count, 0),
         speciesEntries: entries,
+      };
+    })
+    .filter(Boolean);
+});
+
+const normalizeSearchText = (value) =>
+  String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+
+const searchableLocations = computed(() => {
+  const seen = new Set();
+  return (locations.value || [])
+    .map((location) => {
+      const lon = toNumber(location.longitude, NaN);
+      const lat = toNumber(location.latitude, NaN);
+      const locality = String(location.locality || "").trim();
+      if (!locality || !Number.isFinite(lon) || !Number.isFinite(lat)) return null;
+      const uniqueKey = location.locality_id || `${locality}:${lat}:${lon}`;
+      if (seen.has(uniqueKey)) return null;
+      seen.add(uniqueKey);
+      const county = String(location.county || "").trim();
+      const state = String(location.state || "").trim();
+      const country = String(location.country || "").trim();
+      const detailParts = [county, state, country].filter(Boolean);
+      const detailText = detailParts.join(", ");
+      const placeName = detailText ? `${locality}, ${detailText}` : locality;
+      return {
+        id: uniqueKey,
+        locality,
+        placeName,
+        center: [lon, lat],
+        localityHotspot: location.locality_hotspot === true,
+        normalizedLocality: normalizeSearchText(locality),
+        normalizedDetail: normalizeSearchText(detailText),
       };
     })
     .filter(Boolean);
@@ -313,7 +358,7 @@ const scheduleVisitStats = (visitId) => {
     if (!visit) return;
     if (!statsSourceUpdatedAt.value) return;
     const stats = buildVisitStats(visit);
-    await applyVisitUpdates(visit.id, stats, { skipStats: true });
+    await applyVisitUpdates(visit.id, stats, { skipStats: true, promptOnConflict: false });
   }, 600);
   visitStatsTimers.set(key, timer);
 };
@@ -659,6 +704,189 @@ const getGoogleMapsUrl = (location) => {
   return `https://www.google.com/maps/search/?api=1&query=${lat},${lon}`;
 };
 
+const buildSearchHighlightData = () => {
+  const coords = searchHighlightCoords.value;
+  if (!Array.isArray(coords) || coords.length !== 2) {
+    return { type: "FeatureCollection", features: [] };
+  }
+  return {
+    type: "FeatureCollection",
+    features: [
+      {
+        type: "Feature",
+        geometry: {
+          type: "Point",
+          coordinates: coords,
+        },
+        properties: {},
+      },
+    ],
+  };
+};
+
+const clearSearchHighlight = () => {
+  searchHighlightCoords.value = null;
+  if (searchHighlightTimer) {
+    clearTimeout(searchHighlightTimer);
+    searchHighlightTimer = null;
+  }
+  if (!map || !mapLoaded) return;
+  const source = map.getSource("search-result-highlight");
+  if (source) {
+    source.setData(buildSearchHighlightData());
+  }
+};
+
+const setSearchHighlight = (coords) => {
+  if (!Array.isArray(coords) || coords.length !== 2) return;
+  searchHighlightCoords.value = coords;
+  if (searchHighlightTimer) {
+    clearTimeout(searchHighlightTimer);
+  }
+  searchHighlightTimer = setTimeout(() => {
+    clearSearchHighlight();
+  }, 15000);
+  if (!map || !mapLoaded) return;
+  const source = map.getSource("search-result-highlight");
+  if (source) {
+    source.setData(buildSearchHighlightData());
+  }
+};
+
+const getSearchFeatureCenter = (feature) => {
+  const geometryCoords = feature?.geometry?.coordinates;
+  if (
+    Array.isArray(geometryCoords) &&
+    geometryCoords.length === 2 &&
+    Number.isFinite(Number(geometryCoords[0])) &&
+    Number.isFinite(Number(geometryCoords[1]))
+  ) {
+    return [Number(geometryCoords[0]), Number(geometryCoords[1])];
+  }
+  const center = feature?.center;
+  if (
+    Array.isArray(center) &&
+    center.length === 2 &&
+    Number.isFinite(Number(center[0])) &&
+    Number.isFinite(Number(center[1]))
+  ) {
+    return [Number(center[0]), Number(center[1])];
+  }
+  const coordinates = feature?.properties?.coordinates;
+  if (
+    coordinates &&
+    Number.isFinite(Number(coordinates.longitude)) &&
+    Number.isFinite(Number(coordinates.latitude))
+  ) {
+    return [Number(coordinates.longitude), Number(coordinates.latitude)];
+  }
+  return null;
+};
+
+const focusOnSearchFeature = (feature) => {
+  if (!map || !mapLoaded || !feature) return;
+  const bbox = Array.isArray(feature?.bbox) && feature.bbox.length === 4 ? feature.bbox : null;
+  const center = getSearchFeatureCenter(feature);
+  if (bbox) {
+    map.fitBounds(
+      [
+        [Number(bbox[0]), Number(bbox[1])],
+        [Number(bbox[2]), Number(bbox[3])],
+      ],
+      { padding: 80, maxZoom: 12 },
+    );
+  } else if (center) {
+    const isLocal = feature?.properties?.resultSource === "ebd-location";
+    map.flyTo({
+      center,
+      zoom: isLocal ? Math.max(map.getZoom(), 12.5) : Math.max(map.getZoom(), 10),
+      essential: true,
+    });
+  }
+  if (center) {
+    setSearchHighlight(center);
+  }
+};
+
+const searchLocalLocations = (query) => {
+  const normalizedQuery = normalizeSearchText(query);
+  if (!normalizedQuery || normalizedQuery.length < 2) return [];
+  const currentBounds = map?.getBounds?.() || null;
+  return searchableLocations.value
+    .map((location) => {
+      let score = 0;
+      if (location.normalizedLocality.startsWith(normalizedQuery)) {
+        score += 200;
+      } else if (location.normalizedLocality.includes(normalizedQuery)) {
+        score += 120;
+      } else if (location.normalizedDetail.includes(normalizedQuery)) {
+        score += 60;
+      } else {
+        return null;
+      }
+      if (location.localityHotspot) score += 10;
+      if (
+        currentBounds &&
+        currentBounds.contains({ lng: location.center[0], lat: location.center[1] })
+      ) {
+        score += 15;
+      }
+      return {
+        score,
+        feature: {
+          type: "Feature",
+          geometry: {
+            type: "Point",
+            coordinates: location.center,
+          },
+          center: location.center,
+          place_name: location.placeName,
+          text: location.locality,
+          place_type: ["place"],
+          properties: {
+            resultSource: "ebd-location",
+            locality_id: location.id,
+            locality_hotspot: location.localityHotspot,
+          },
+        },
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.score - a.score || a.feature.place_name.localeCompare(b.feature.place_name))
+    .slice(0, 8)
+    .map((entry) => entry.feature);
+};
+
+const setupLocationSearch = () => {
+  if (!map || locationSearchControl || !locationSearchContainer.value) return;
+  locationSearchControl = new MapboxGeocoder({
+    accessToken: mapboxgl.accessToken,
+    mapboxgl,
+    marker: false,
+    flyTo: false,
+    minLength: 2,
+    limit: 8,
+    reverseGeocode: false,
+    enableEventLogging: false,
+    localGeocoderOnly: false,
+    localGeocoder: searchLocalLocations,
+    placeholder: "Search EBD location or place",
+  });
+  locationSearchControl.on("result", (event) => {
+    focusOnSearchFeature(event?.result || null);
+  });
+  locationSearchControl.on("clear", () => {
+    clearSearchHighlight();
+  });
+  locationSearchContainer.value.appendChild(locationSearchControl.onAdd(map));
+};
+
+const teardownLocationSearch = () => {
+  if (!locationSearchControl) return;
+  locationSearchControl.onRemove();
+  locationSearchControl = null;
+};
+
 const formatRouteSummary = (distanceM, durationS) => {
   if (!distanceM && !durationS) return "Route available";
   const parts = [];
@@ -727,7 +955,7 @@ const computeRouteSegment = async (visitId) => {
       routeDistanceM: distanceM,
       routeDurationS: durationS,
       updatedAt: Date.now(),
-    });
+    }, { promptOnConflict: false });
     refreshRouteSource();
   } catch (error) {
     console.warn("Directions API error, route unavailable.", error);
@@ -762,7 +990,7 @@ const clearRouteForVisits = async (visitIds) => {
           routeDistanceM: 0,
           routeDurationS: 0,
           updatedAt,
-        }),
+        }, { promptOnConflict: false }),
       ),
     );
   }
@@ -963,15 +1191,8 @@ const updateNonBirdingMarkers = () => {
   nonBirdingMarkers = markers;
 };
 
-const loadVisits = async (tripId) => {
-  if (!tripId) {
-    visits.value = [];
-    selectedVisitId.value = "";
-    routeSegments.value = {};
-    refreshRouteSource();
-    return;
-  }
-  visits.value = await db.visits.where("tripId").equals(tripId).toArray();
+const applyLoadedVisits = (nextVisits) => {
+  visits.value = Array.isArray(nextVisits) ? nextVisits : [];
   if (visits.value.length > 0) {
     const exists = visits.value.some((visit) => String(visit.id) === String(selectedVisitId.value));
     if (!exists) {
@@ -995,21 +1216,32 @@ const loadVisits = async (tripId) => {
   queueMissingVisitStats();
 };
 
-const loadTripData = async (tripId) => {
+const loadVisits = async (tripId) => {
   if (!tripId) {
+    applyLoadedVisits([]);
+    return;
+  }
+  const nextVisits = await db.visits.where("tripId").equals(tripId).toArray();
+  applyLoadedVisits(nextVisits);
+};
+
+const loadTripData = async (tripId) => {
+  clearSearchHighlight();
+  if (!tripId) {
+    resetTripBundleLoader();
     resetAddMode();
     tripData.value = null;
-    tripInfo.value = null;
     locations.value = [];
-    await loadVisits("");
+    applyLoadedVisits([]);
     updateMapData();
     return;
   }
   resetAddMode();
-  tripInfo.value = await db.trips.get(tripId);
-  tripData.value = await db.ebd.where("tripId").equals(tripId).first();
+  const { bundle, isCurrent } = await loadTripBundle(tripId);
+  if (!isCurrent) return;
+  tripData.value = bundle.ebd;
   locations.value = tripData.value?.locations || [];
-  await loadVisits(tripId);
+  applyLoadedVisits(bundle.visits);
   await nextTick();
   updateMapData();
   fitMapToLocations();
@@ -1043,10 +1275,34 @@ const syncVisitForm = () => {
 const applyVisitUpdates = async (visitId, updates, options = {}) => {
   const index = visits.value.findIndex((item) => String(item.id) === String(visitId));
   const current = index >= 0 ? visits.value[index] : null;
+  const currentVisit = await db.visits.get(visitId);
+  if (!currentVisit) {
+    if (selectedTripId.value) {
+      await loadVisits(selectedTripId.value);
+    }
+    return false;
+  }
+
+  const localUpdatedAt = Number(current?.updatedAt ?? 0);
+  const dbUpdatedAt = Number(currentVisit.updatedAt ?? 0);
+  if (current) {
+    const shouldOverwrite = await resolveRecordConflict({
+      label: "This visit",
+      localUpdatedAt,
+      currentUpdatedAt: dbUpdatedAt,
+      reload: async () => {
+        await loadVisits(selectedTripId.value);
+      },
+      promptOnConflict: options.promptOnConflict,
+    });
+    if (!shouldOverwrite) return false;
+  }
+
   const needsStats = !options.skipStats && hasStatRelevantChange(current, updates);
-  await db.visits.update(visitId, updates);
+  const nextUpdates = withUpdatedAt(updates);
+  await db.visits.update(visitId, nextUpdates);
   if (index >= 0) {
-    visits.value[index] = { ...visits.value[index], ...updates };
+    visits.value[index] = { ...visits.value[index], ...nextUpdates };
   }
   if (options.syncForm) {
     syncVisitForm();
@@ -1054,6 +1310,7 @@ const applyVisitUpdates = async (visitId, updates, options = {}) => {
   if (needsStats) {
     scheduleVisitStats(visitId);
   }
+  return true;
 };
 
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
@@ -1377,6 +1634,24 @@ const deleteVisit = async () => {
     currentIndex >= 0 ? sorted[currentIndex + 1]?.id || sorted[currentIndex - 1]?.id : "";
   const confirmed = window.confirm(`Delete ${visit.name || "this visit"}? This cannot be undone.`);
   if (!confirmed) return;
+  const currentVisit = await db.visits.get(visit.id);
+  if (!currentVisit) {
+    if (selectedTripId.value) {
+      await loadVisits(selectedTripId.value);
+    }
+    return;
+  }
+  const localUpdatedAt = Number(visit.updatedAt ?? 0);
+  const dbUpdatedAt = Number(currentVisit.updatedAt ?? 0);
+  const shouldDelete = await resolveRecordConflict({
+    label: "This visit",
+    localUpdatedAt,
+    currentUpdatedAt: dbUpdatedAt,
+    reload: async () => {
+      await loadVisits(selectedTripId.value);
+    },
+  });
+  if (!shouldDelete) return;
   await db.visits.delete(visit.id);
   visits.value = visits.value.filter((item) => String(item.id) !== String(visit.id));
   const remainingSorted = getSortedVisits();
@@ -1640,12 +1915,41 @@ const setupMapLayers = () => {
       "circle-color": [
         "case",
         ["boolean", ["get", "locality_hotspot"], false],
-        "#f4a261",
-        "#ffd166",
+        "#418440",
+        "#f8ae1c",
       ],
       "circle-opacity": 0.85,
-      "circle-stroke-color": "#1b1f24",
+      "circle-stroke-color": "#07464e",
       "circle-stroke-width": 1,
+    },
+  });
+
+  map.addSource("search-result-highlight", {
+    type: "geojson",
+    data: buildSearchHighlightData(),
+  });
+
+  map.addLayer({
+    id: "search-result-highlight-ring",
+    type: "circle",
+    source: "search-result-highlight",
+    paint: {
+      "circle-radius": 12,
+      "circle-color": "rgba(248, 174, 28, 0.18)",
+      "circle-stroke-color": "#f8ae1c",
+      "circle-stroke-width": 3,
+    },
+  });
+
+  map.addLayer({
+    id: "search-result-highlight-core",
+    type: "circle",
+    source: "search-result-highlight",
+    paint: {
+      "circle-radius": 5,
+      "circle-color": "#cf7f10",
+      "circle-stroke-color": "#ffffff",
+      "circle-stroke-width": 2,
     },
   });
 
@@ -1671,10 +1975,10 @@ const setupMapLayers = () => {
       "fill-color": [
         "case",
         ["boolean", ["get", "selected"], false],
-        "rgba(255, 107, 107, 0.22)",
-        "rgba(17, 138, 178, 0.14)",
+        "rgba(248, 174, 28, 0.24)",
+        "rgba(7, 70, 78, 0.12)",
       ],
-      "fill-outline-color": "rgba(17, 138, 178, 0.4)",
+      "fill-outline-color": "rgba(7, 70, 78, 0.32)",
     },
   });
 
@@ -1683,7 +1987,7 @@ const setupMapLayers = () => {
     type: "line",
     source: "visit-areas",
     paint: {
-      "line-color": ["case", ["boolean", ["get", "selected"], false], "#ff6b6b", "#118ab2"],
+      "line-color": ["case", ["boolean", ["get", "selected"], false], "#f8ae1c", "#07464e"],
       "line-width": 2,
     },
   });
@@ -1708,7 +2012,7 @@ const setupMapLayers = () => {
     type: "line",
     source: "visit-path",
     paint: {
-      "line-color": "#ff6b00",
+      "line-color": "#cf7f10",
       "line-width": 2.5,
       "line-blur": 0.1,
       "line-opacity": ["case", ["boolean", ["get", "hasRoute"], false], 0, 0.7],
@@ -1724,7 +2028,7 @@ const setupMapLayers = () => {
       "line-cap": "round",
     },
     paint: {
-      "line-color": "#ff6b00",
+      "line-color": "#cf7f10",
       "line-width": 3.2,
       "line-opacity": 0.8,
     },
@@ -1739,8 +2043,8 @@ const setupMapLayers = () => {
       "circle-color": [
         "case",
         ["boolean", ["get", "selected"], false],
-        "#ff6b6b",
-        ["case", ["==", ["get", "type"], "birding"], "#118ab2", "#6c757d"],
+        "#f8ae1c",
+        ["case", ["==", ["get", "type"], "birding"], "#07464e", "#7a8b84"],
       ],
       "circle-opacity": ["case", ["==", ["get", "type"], "birding"], 0.9, 0.5],
       "circle-stroke-color": "#ffffff",
@@ -1780,6 +2084,7 @@ const initMap = () => {
   });
 
   map.addControl(new mapboxgl.NavigationControl());
+  setupLocationSearch();
   geolocateControl = new mapboxgl.GeolocateControl({
     positionOptions: { enableHighAccuracy: true },
     trackUserLocation: false,
@@ -1858,9 +2163,6 @@ onMounted(async () => {
     }
     pendingMapState.value = restored;
   }
-  if (selectedTripId.value && !tripData.value) {
-    await loadTripData(selectedTripId.value);
-  }
   nextTick(initMap);
   window.addEventListener("keydown", handleKeydown);
 });
@@ -1868,6 +2170,11 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   visitStatsTimers.forEach((timer) => clearTimeout(timer));
   visitStatsTimers.clear();
+  if (searchHighlightTimer) {
+    clearTimeout(searchHighlightTimer);
+    searchHighlightTimer = null;
+  }
+  teardownLocationSearch();
   saveMapState();
   window.removeEventListener("keydown", handleKeydown);
 });
@@ -1913,7 +2220,7 @@ onBeforeUnmount(() => {
                 <i class="bi bi-trash3"></i>
               </button>
               <button
-                class="btn btn-outline-secondary btn-sm"
+                class="btn btn-sm app-action-btn app-action-btn--green"
                 @click="exportVisits"
                 :disabled="!selectedTripId || !visits.length"
               >
@@ -1921,7 +2228,7 @@ onBeforeUnmount(() => {
                 <span class="ms-1 d-none d-md-inline">Export</span>
               </button>
               <button
-                class="btn btn-outline-secondary btn-sm"
+                class="btn btn-sm app-action-btn app-action-btn--teal"
                 @click="importVisits"
                 :disabled="!selectedTripId"
               >
@@ -1985,10 +2292,11 @@ onBeforeUnmount(() => {
                         {{ getLegSummary(visit.id) }}
                       </span>
                       <button
+                        v-if="visit.globalIndex !== 0"
                         class="btn btn-outline-secondary btn-sm"
                         type="button"
                         @click.stop="computeRouteSegment(visit.id)"
-                        :disabled="routeLoadingId === String(visit.id) || visit.globalIndex === 0"
+                        :disabled="routeLoadingId === String(visit.id)"
                       >
                         <span
                           v-if="routeLoadingId === String(visit.id)"
@@ -2104,7 +2412,7 @@ onBeforeUnmount(() => {
                     :append-to-body="true"
                     :disabled="visitForm.type !== 'birding'"
                     placeholder="Select species"
-                    class="species-select"
+                    class="species-select app-vselect app-vselect--compact"
                     @update:modelValue="saveTargetSpecies"
                   >
                     <template #option="{ commonName, scientificName, code }">
@@ -2148,6 +2456,7 @@ onBeforeUnmount(() => {
       </div>
       <div class="col-12 col-lg-7 col-xl-7 col-xxl-8 d-flex build-trip-pane build-trip-map-pane">
         <div class="position-relative flex-grow-1 h-100 build-trip-map" style="min-height: 420px">
+          <div ref="locationSearchContainer" class="build-trip-search-overlay"></div>
           <div
             class="position-absolute top-0 start-0 d-lg-none pe-auto"
             v-if="tripData && !isMobilePanelOpen"
@@ -2173,46 +2482,63 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.visit-type-marker {
-  background: #ffffff;
-  border: 1px solid rgba(15, 23, 42, 0.2);
-  border-radius: 999px;
-  padding: 4px 6px;
-  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.15);
-  color: #1f2937;
+.build-trip-search-overlay {
+  position: absolute;
+  top: 0.75rem;
+  left: 0.75rem;
+  right: 0.75rem;
+  z-index: 4;
+  pointer-events: none;
+}
+
+.build-trip-search-overlay:empty {
+  display: none;
+}
+
+.build-trip-search-overlay :deep(*) {
+  pointer-events: auto;
+}
+
+.build-trip-search-overlay :deep(.mapboxgl-ctrl-geocoder) {
+  width: min(100%, 520px);
+  max-width: 100%;
+  min-width: 0;
+  box-shadow: 0 10px 24px rgba(var(--app-color-deep-teal-rgb), 0.16);
+  border: 1px solid rgba(var(--app-color-deep-teal-rgb), 0.14);
+  border-radius: 12px;
+}
+
+.build-trip-search-overlay :deep(.mapboxgl-ctrl-geocoder--icon) {
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.build-trip-search-overlay :deep(.mapboxgl-ctrl-geocoder--input) {
+  height: 46px;
   font-size: 0.95rem;
 }
 
-.species-select :deep(.vs__dropdown-toggle) {
-  min-height: 34px;
-  padding: 2px 8px;
-  border-radius: 6px;
+.visit-type-marker {
+  background: #ffffff;
+  border: 1px solid rgba(var(--app-color-deep-teal-rgb), 0.18);
+  border-radius: 999px;
+  padding: 4px 6px;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.15);
+  color: var(--app-color-deep-teal);
+  font-size: 0.95rem;
 }
 
 .species-select :deep(.vs__selected-options) {
   flex-wrap: wrap;
   overflow: visible;
-  gap: 4px;
 }
 
 .species-select :deep(.vs__selected) {
-  margin: 0;
   padding: 2px 6px;
-  font-size: 0.75rem;
   white-space: normal;
-  background: #fff3cd;
-  border-color: #ffe08a;
-  color: #1f2937;
-}
-
-.species-select :deep(.vs__search) {
-  margin: 0;
-  padding: 0;
-  font-size: 0.8rem;
-}
-
-.species-select :deep(.vs__dropdown-menu) {
-  max-height: 200px;
+  background: rgba(var(--app-color-gold-rgb), 0.18);
+  border-color: rgba(var(--app-color-gold-rgb), 0.34);
+  color: var(--app-color-ink);
 }
 
 .list-group-item.active .text-muted,
@@ -2253,16 +2579,16 @@ onBeforeUnmount(() => {
 
 .build-trip-splitter {
   height: 14px;
-  background: #f1f3f5;
-  border-top: 1px solid #dee2e6;
-  border-bottom: 1px solid #dee2e6;
+  background: rgba(var(--app-color-deep-teal-rgb), 0.05);
+  border-top: 1px solid rgba(var(--app-color-deep-teal-rgb), 0.12);
+  border-bottom: 1px solid rgba(var(--app-color-deep-teal-rgb), 0.12);
   cursor: row-resize;
   flex: 0 0 auto;
   touch-action: none;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #9aa0a6;
+  color: rgba(var(--app-color-slate-rgb), 0.7);
   font-size: 0.8rem;
 }
 
@@ -2309,9 +2635,9 @@ onBeforeUnmount(() => {
 :deep(.radius-handle) {
   width: 12px;
   height: 12px;
-  border: 2px solid #ff6b6b;
+  border: 2px solid var(--app-color-gold);
   border-radius: 50%;
-  background: #ff6b6b;
+  background: var(--app-color-gold);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
   cursor: ew-resize;
 }
@@ -2320,12 +2646,16 @@ onBeforeUnmount(() => {
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  background: #ff6b6b;
+  background: var(--app-color-gold);
   border: 2px solid #ffffff;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
 }
 
 @media (max-width: 991.98px) {
+  .build-trip-search-overlay {
+    top: 4.25rem;
+  }
+
   .build-trip-panel {
     position: absolute;
     inset: 0;
@@ -2345,6 +2675,12 @@ onBeforeUnmount(() => {
 
   .build-trip-panel .build-trip-list {
     overflow-y: auto;
+  }
+}
+
+@media (min-width: 992px) {
+  .build-trip-search-overlay {
+    right: auto;
   }
 }
 </style>

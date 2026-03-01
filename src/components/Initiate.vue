@@ -178,7 +178,7 @@
 </template>
 
 <script>
-import { ref, reactive } from "vue";
+import { ref, reactive, shallowRef } from "vue";
 import Papa from "papaparse";
 import JSZip from "jszip";
 import {
@@ -202,13 +202,13 @@ export default {
     const readingFileProgress = ref(0);
     const readingFileStatus = ref("");
     const hasError = ref(false);
-    const rawData = ref([]);
+    const rawData = shallowRef([]);
 
     // Checklists
     const isProcessing = ref(false);
-    const checklists = ref([]);
-    const locations = ref([]);
-    const speciesList = ref([]);
+    const checklists = shallowRef([]);
+    const locations = shallowRef([]);
+    const speciesList = shallowRef([]);
     const saveStatus = ref("");
 
     const availableStates = ref([]);
@@ -238,6 +238,25 @@ export default {
       state: [],
       county: [],
     });
+
+    const resetLoadedData = () => {
+      rawData.value = [];
+      checklists.value = [];
+      locations.value = [];
+      speciesList.value = [];
+      uploadedFile.value = null;
+      availableStates.value = [];
+      availableCounties.value = [];
+      availableYears.value = { min: null, max: null };
+      filters.minYear = null;
+      filters.maxYear = null;
+      filters.minMonth = 1;
+      filters.maxMonth = 12;
+      filters.state = [];
+      filters.county = [];
+      readingFileProgress.value = 0;
+      if (fileInput.value) fileInput.value.value = "";
+    };
 
     const handleFileUpload = async (event) => {
       const file = event.target.files[0];
@@ -544,15 +563,17 @@ export default {
               );
             }
           }
-          location.checklist.push({
-            checklist_id: checklist.checklist_id,
-            date: checklist.date,
-            time: checklist.time,
-            duration_minutes: checklist.duration_minutes,
-            effort_distance_km: checklist.effort_distance_km,
-            all_species_reported: checklist.all_species_reported === true,
-            species: checklist.species,
-          });
+          if (isComplete) {
+            location.checklist.push({
+              checklist_id: checklist.checklist_id,
+              date: checklist.date,
+              time: checklist.time,
+              duration_minutes: checklist.duration_minutes,
+              effort_distance_km: checklist.effort_distance_km,
+              all_species_reported: true,
+              species: checklist.species,
+            });
+          }
         });
 
         locations.value = Array.from(locationMap.values());
@@ -588,6 +609,15 @@ export default {
       }, 50);
     };
 
+    const buildSerializableFilters = () => ({
+      minYear: filters.minYear,
+      maxYear: filters.maxYear,
+      minMonth: filters.minMonth,
+      maxMonth: filters.maxMonth,
+      state: Array.isArray(filters.state) ? [...filters.state] : [],
+      county: Array.isArray(filters.county) ? [...filters.county] : [],
+    });
+
     const processDone = () => {
       const region = { code: "", name: "" };
       const uniqueStates = new Set();
@@ -612,7 +642,7 @@ export default {
       }
 
       emit("processed", {
-        speciesList: speciesList.value,
+        speciesList: speciesList.value.map((species) => ({ ...species })),
         locations: locations.value.map((location) => ({
           locality_id: location.locality_id,
           latitude: Number(location.latitude),
@@ -630,11 +660,18 @@ export default {
           checklist_count_complete: location.checklist_count_complete,
           checklist_count_incomplete: location.checklist_count_incomplete,
           species_checklist_counts: Array.from(location.speciesChecklistCounts.entries()),
-          checklist: location.checklist,
+          checklist: location.checklist.map((entry) => ({
+            ...entry,
+            species: Array.isArray(entry.species)
+              ? entry.species.map((species) => ({ ...species }))
+              : [],
+          })),
         })),
         region,
-        filters: { ...filters },
+        filters: buildSerializableFilters(),
       });
+      resetLoadedData();
+      readingFileStatus.value = "Trip created. Import data cleared from memory.";
       saveStatus.value = "";
       isProcessing.value = false;
     };

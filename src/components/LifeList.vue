@@ -10,7 +10,7 @@
               class="text-decoration-none"
               title="Open eBird World Life List"
             >
-              <i class="bi bi-globe2 text-danger me-1"></i>
+              <i class="bi bi-globe2 text-primary me-1"></i>
               Life list
             </a>
           </label>
@@ -33,7 +33,7 @@
               <i class="bi bi-check-circle-fill text-success me-2"></i>
               <div class="text-muted"><strong>Loaded:</strong> {{ lifeListCount }} species</div>
             </div>
-            <button class="btn btn-outline-secondary btn-sm text-danger" type="button" @click="clearLifeList">
+            <button class="btn btn-sm app-action-btn app-action-btn--danger" type="button" @click="clearLifeList">
               <i class="bi bi-trash3"></i>
             </button>
           </div>
@@ -54,11 +54,11 @@
               class="text-decoration-none"
               :title="`Open eBird life list for ${region.name || region.code}`"
             >
-              <i class="bi bi-geo-alt-fill text-danger me-1"></i>
+              <i class="bi bi-geo-alt-fill text-warning me-1"></i>
               Region list
             </a>
             <span v-else>
-              <i class="bi bi-geo-alt-fill text-danger me-1"></i>
+              <i class="bi bi-geo-alt-fill text-warning me-1"></i>
               Region list
             </span>
           </label>
@@ -81,7 +81,7 @@
               <i class="bi bi-check-circle-fill text-success me-2"></i>
               <div class="text-muted"><strong>Loaded:</strong> {{ regionListCount }} species</div>
             </div>
-            <button class="btn btn-outline-secondary btn-sm text-danger" type="button" @click="clearRegionList">
+            <button class="btn btn-sm app-action-btn app-action-btn--danger" type="button" @click="clearRegionList">
               <i class="bi bi-trash3"></i>
             </button>
           </div>
@@ -132,7 +132,7 @@
             <i class="bi bi-check-circle-fill text-success me-2"></i>
             <div class="text-muted"><strong>Loaded:</strong> {{ lifeListCount }} species</div>
           </div>
-          <button class="btn btn-outline-secondary btn-sm text-danger" type="button" @click="clearLifeList">
+          <button class="btn btn-sm app-action-btn app-action-btn--danger" type="button" @click="clearLifeList">
             <i class="bi bi-trash3"></i>
           </button>
         </div>
@@ -175,7 +175,7 @@
             <i class="bi bi-check-circle-fill text-success me-2"></i>
             <div class="text-muted"><strong>Loaded:</strong> {{ regionListCount }} species</div>
           </div>
-          <button class="btn btn-outline-secondary btn-sm text-danger" type="button" @click="clearRegionList">
+          <button class="btn btn-sm app-action-btn app-action-btn--danger" type="button" @click="clearRegionList">
             <i class="bi bi-trash3"></i>
           </button>
         </div>
@@ -197,7 +197,7 @@
       </div>
       <div v-if="hasRegionList">
         <strong>New for Region:</strong>
-        <span class="text-primary fw-bold ms-1">{{ regionNewCount }}</span>
+        <span class="text-warning fw-bold ms-1">{{ regionNewCount }}</span>
       </div>
     </div>
   </div>

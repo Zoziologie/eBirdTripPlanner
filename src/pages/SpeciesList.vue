@@ -1,18 +1,25 @@
 <script setup>
-import { ref, onMounted, watch, computed, nextTick } from "vue";
+import { ref, shallowRef, onMounted, watch, computed, nextTick } from "vue";
 import { Tooltip, Popover } from "bootstrap";
 import vSelect from "vue-select";
 import "vue-select/dist/vue-select.css";
+import { useTripBundleLoader } from "../composables/useTripBundleLoader";
 import { db } from "../data/db";
+import { resolveRecordConflict, withUpdatedAt } from "../utils/recordConflicts";
 import { trips, selectedTripId, refreshTrips } from "../state/tripSelection";
 import { selectedVisitId } from "../state/visitSelection";
 import { ebdUpdatedAt } from "../state/ebdUpdates";
 
-const trip = ref(null);
-const ebd = ref(null);
+const trip = shallowRef(null);
+const ebd = shallowRef(null);
 const visits = ref([]);
-const locations = ref([]);
-const speciesList = ref([]);
+const locations = shallowRef([]);
+const speciesList = shallowRef([]);
+const {
+  isLoadingTripBundle: isLoadingTripData,
+  loadTripBundle,
+  resetTripBundleLoader,
+} = useTripBundleLoader({ includeTrip: true, includeEbd: true, includeVisits: true });
 
 const sortKey = ref("rank");
 const sortDir = ref("asc");
@@ -28,7 +35,28 @@ const locationMinRate = ref(0.05);
 const selectedTrip = computed(
   () => trips.value.find((item) => item.id === selectedTripId.value) || null,
 );
-const locationFiltersActive = computed(() => Boolean(selectedVisitId.value));
+const hasSelectedVisit = computed(() => Boolean(selectedVisitId.value));
+const showInterestColumn = computed(() => hasSelectedVisit.value);
+const showRankColumn = computed(() => hasSelectedVisit.value);
+const showEbdColumn = computed(() => !hasSelectedVisit.value);
+const rateColumnSortKey = computed(() => (hasSelectedVisit.value ? "location" : "avg"));
+const rateColumnLabel = computed(() =>
+  hasSelectedVisit.value ? "Location" : "Average Trip",
+);
+const rateColumnShortLabel = computed(() =>
+  hasSelectedVisit.value ? "Location" : "Avg. Trip",
+);
+const rateColumnPopoverTitle = computed(() =>
+  hasSelectedVisit.value ? "Location rate" : "Average trip",
+);
+const rateColumnPopoverContent = computed(() =>
+  hasSelectedVisit.value
+    ? "Detection rate within the selected location filter."
+    : "Average detection rate across visits.",
+);
+const rateFilterLabel = computed(() =>
+  hasSelectedVisit.value ? "Location (min)" : "Average trip (min)",
+);
 
 const locationMeta = computed(() => {
   const base = locations.value || [];
@@ -65,28 +93,9 @@ const toSpeciesCountsMap = (counts) => {
   return map;
 };
 
-const distanceKm = (a, b) => {
-  const toRad = (deg) => (deg * Math.PI) / 180;
-  const lat1 = toRad(a[1]);
-  const lat2 = toRad(b[1]);
-  const dLat = lat2 - lat1;
-  const dLon = toRad(b[0] - a[0]);
-  const sinLat = Math.sin(dLat / 2);
-  const sinLon = Math.sin(dLon / 2);
-  const hav = sinLat * sinLat + Math.cos(lat1) * Math.cos(lat2) * sinLon * sinLon;
-  return 6371 * 2 * Math.asin(Math.min(1, Math.sqrt(hav)));
-};
-
-const loadVisits = async (tripId) => {
-  if (!tripId) {
-    visits.value = [];
-    return;
-  }
-  visits.value = await db.visits.where("tripId").equals(tripId).toArray();
-};
-
 const loadTripData = async (tripId) => {
   if (!tripId) {
+    resetTripBundleLoader();
     trip.value = null;
     ebd.value = null;
     visits.value = [];
@@ -94,11 +103,16 @@ const loadTripData = async (tripId) => {
     speciesList.value = [];
     return;
   }
-  trip.value = await db.trips.get(tripId);
-  ebd.value = await db.ebd.where("tripId").equals(tripId).first();
-  locations.value = ebd.value?.locations || [];
-  speciesList.value = ebd.value?.speciesList || [];
-  await loadVisits(tripId);
+
+  const { bundle, isCurrent } = await loadTripBundle(tripId);
+  if (!isCurrent) return;
+
+  trip.value = bundle.trip || null;
+  ebd.value = bundle.ebd || null;
+  locations.value = bundle.ebd?.locations || [];
+  speciesList.value = bundle.ebd?.speciesList || [];
+  visits.value = bundle.visits || [];
+
   if (
     selectedVisitId.value &&
     !visits.value.some((visit) => String(visit.id) === String(selectedVisitId.value))
@@ -112,6 +126,7 @@ const loadTripData = async (tripId) => {
       selectedVisitId.value = "";
     }
   }
+
   await nextTick();
 };
 
@@ -351,10 +366,29 @@ const toggleTargetSpecies = async (code, checked) => {
     next.delete(code);
   }
   const updated = Array.from(next);
-  await db.visits.update(visit.id, { targetSpecies: updated, updatedAt: Date.now() });
+  const currentVisit = await db.visits.get(visit.id);
+  if (!currentVisit) {
+    if (selectedTripId.value) {
+      await loadTripData(selectedTripId.value);
+    }
+    return;
+  }
+  const shouldOverwrite = await resolveRecordConflict({
+    label: "This visit",
+    localUpdatedAt: Number(visit.updatedAt ?? 0),
+    currentUpdatedAt: Number(currentVisit.updatedAt ?? 0),
+    reload: async () => {
+      if (selectedTripId.value) {
+        await loadTripData(selectedTripId.value);
+      }
+    },
+  });
+  if (!shouldOverwrite) return;
+  const nextUpdates = withUpdatedAt({ targetSpecies: updated });
+  await db.visits.update(visit.id, nextUpdates);
   const index = visits.value.findIndex((item) => String(item.id) === String(visit.id));
   if (index >= 0) {
-    visits.value[index] = { ...visits.value[index], targetSpecies: updated };
+    visits.value[index] = { ...visits.value[index], ...nextUpdates };
   }
 };
 
@@ -401,7 +435,11 @@ const hasTripReportColumn = computed(() =>
   ),
 );
 const speciesColspan = computed(
-  () => 5 + (locationFiltersActive.value ? 2 : 0) + (selectedVisitId.value ? 1 : 0),
+  () =>
+    4 +
+    (showInterestColumn.value ? 1 : 0) +
+    (showRankColumn.value ? 1 : 0) +
+    (showEbdColumn.value ? 1 : 0),
 );
 
 const hasActiveLiferFilter = computed(() => Object.values(liferFilters.value).some(Boolean));
@@ -437,22 +475,21 @@ const sortedSpecies = computed(() => {
       const matchesInterest = liferFilters.value.interest && isTargetSpecies(species.code);
       if (!matchesLife && !matchesRegion && !matchesTrip && !matchesInterest) return false;
     }
-    if (selectedVisitId.value) {
+    if (hasSelectedVisit.value) {
       const locationRate = Number(species.locationRate ?? 0);
       if (!Number.isFinite(locationRate) || locationRate <= 0) return false;
     }
-    const rate = selectedVisitId.value ? species.locationRate : species.overallRate;
-    const normalizedRate = rate === null || rate === undefined || Number.isNaN(rate) ? 0 : rate;
-    if (locationFiltersActive.value) {
-      const minRate = Number(locationMinRate.value ?? 0);
-      if (normalizedRate < minRate) return false;
-      const cumThreshold = Number(cumulativeTripMax.value ?? 1);
-      const totalProbability =
-        species.totalProbability === null || species.totalProbability === undefined
-          ? 0
-          : Number(species.totalProbability);
-      if (Number.isFinite(totalProbability) && totalProbability > cumThreshold) return false;
-    }
+    const activeRate = hasSelectedVisit.value ? species.locationRate : species.avgRate;
+    const normalizedRate =
+      activeRate === null || activeRate === undefined || Number.isNaN(activeRate) ? 0 : activeRate;
+    const minRate = Number(locationMinRate.value ?? 0);
+    if (normalizedRate < minRate) return false;
+    const cumThreshold = Number(cumulativeTripMax.value ?? 1);
+    const totalProbability =
+      species.totalProbability === null || species.totalProbability === undefined
+        ? 0
+        : Number(species.totalProbability);
+    if (Number.isFinite(totalProbability) && totalProbability > cumThreshold) return false;
     return true;
   });
   const dir = sortDir.value === "asc" ? 1 : -1;
@@ -496,7 +533,7 @@ const sortedSpecies = computed(() => {
 });
 
 const getExpectedProbability = (species) => {
-  const rawValue = locationFiltersActive.value ? species.locationRate : species.totalProbability;
+  const rawValue = hasSelectedVisit.value ? species.locationRate : species.totalProbability;
   const value = Number(rawValue);
   if (!Number.isFinite(value)) return 0;
   return Math.min(Math.max(value, 0), 1);
@@ -543,7 +580,7 @@ const expectedSummaryItems = computed(() => {
       value: expectedSummary.value.region,
     });
   }
-  if (hasTripReportColumn.value && locationFiltersActive.value) {
+  if (hasTripReportColumn.value && hasSelectedVisit.value) {
     items.push({
       key: "trip",
       label: "Trip",
@@ -559,8 +596,7 @@ const formatExpectedCount = (value) => {
   return numeric.toFixed(1);
 };
 
-const getSpeciesMapUrl = (code) => {
-  if (!code) return "";
+const speciesMapBoundsQuery = computed(() => {
   const bounds = (locations.value || []).reduce(
     (acc, loc) => {
       const lon = Number(loc.longitude);
@@ -580,15 +616,22 @@ const getSpeciesMapUrl = (code) => {
     Number.isFinite(bounds.maxX) &&
     Number.isFinite(bounds.maxY);
   if (hasBounds) {
-    const params = new URLSearchParams({
+    return new URLSearchParams({
       "env.minX": String(bounds.minX),
       "env.minY": String(bounds.minY),
       "env.maxX": String(bounds.maxX),
       "env.maxY": String(bounds.maxY),
       "neg": "true",
       "gp": "true",
-    });
-    return `https://ebird.org/map/${code}?${params.toString()}`;
+    }).toString();
+  }
+  return "";
+});
+
+const getSpeciesMapUrl = (code) => {
+  if (!code) return "";
+  if (speciesMapBoundsQuery.value) {
+    return `https://ebird.org/map/${code}?${speciesMapBoundsQuery.value}`;
   }
   return `https://ebird.org/map/${code}`;
 };
@@ -598,11 +641,25 @@ watch(ebdUpdatedAt, async () => {
   if (!selectedTripId.value) return;
   await loadTripData(selectedTripId.value);
 });
+watch(
+  hasSelectedVisit,
+  (selected) => {
+    if (selected) {
+      if (sortKey.value === "avg" || sortKey.value === "overall") {
+        sortKey.value = "rank";
+        sortDir.value = "asc";
+      }
+      return;
+    }
+    if (sortKey.value === "rank" || sortKey.value === "location") {
+      sortKey.value = "avg";
+      sortDir.value = "desc";
+    }
+  },
+  { immediate: true },
+);
 onMounted(async () => {
   await refreshTrips();
-  if (selectedTripId.value && !trip.value) {
-    await loadTripData(selectedTripId.value);
-  }
   nextTick(() => {
     document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach((el) => {
       new Tooltip(el);
@@ -627,7 +684,16 @@ watch(selectedTripId, () => {
 
 <template>
   <div class="row g-4 mt-1">
-    <div class="col-12" v-if="trip">
+    <div class="col-12" v-if="isLoadingTripData">
+      <div class="card">
+        <div class="card-body py-5 text-center">
+          <div class="spinner-border text-primary" role="status" aria-hidden="true"></div>
+          <div class="mt-3 fw-semibold">Loading species list...</div>
+          <div class="small text-muted">Large trips can take a moment to open.</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-12" v-else-if="trip">
       <div class="card">
         <div class="card-body">
           <div class="mb-3 visit-selector-row">
@@ -648,7 +714,7 @@ watch(selectedTripId, () => {
               :clearable="true"
               :searchable="true"
               placeholder="All locations (full trip)"
-              class="location-select-control flex-grow-1"
+              class="location-select-control app-vselect flex-grow-1"
             >
               <template #option="{ label }">
                 <div class="small visit-option-label" :title="label">{{ label }}</div>
@@ -715,10 +781,7 @@ watch(selectedTripId, () => {
               </label>
             </div>
             <div class="d-flex align-items-center gap-3 flex-wrap filter-sliders">
-              <div
-                class="d-flex align-items-center gap-2 slider-inline"
-                :class="{ 'text-muted': !locationFiltersActive }"
-              >
+              <div class="d-flex align-items-center gap-2 slider-inline">
                 <span class="small mb-0">Cum. Trip (max)</span>
                 <input
                   type="range"
@@ -727,16 +790,12 @@ watch(selectedTripId, () => {
                   max="1"
                   step="0.01"
                   v-model.number="cumulativeTripMax"
-                  :disabled="!locationFiltersActive"
                   aria-label="Maximum cumulative trip probability"
                 />
                 <span class="small">{{ formatPercent(cumulativeTripMax) }}</span>
               </div>
-              <div
-                class="d-flex align-items-center gap-2 slider-inline"
-                :class="{ 'text-muted': !locationFiltersActive }"
-              >
-                <span class="small mb-0">Location rate (min)</span>
+              <div class="d-flex align-items-center gap-2 slider-inline">
+                <span class="small mb-0">{{ rateFilterLabel }}</span>
                 <input
                   type="range"
                   class="form-range filter-range"
@@ -744,8 +803,7 @@ watch(selectedTripId, () => {
                   max="1"
                   step="0.01"
                   v-model.number="locationMinRate"
-                  :disabled="!locationFiltersActive"
-                  aria-label="Minimum location rate"
+                  :aria-label="rateFilterLabel"
                 />
                 <span class="small">{{ formatPercent(locationMinRate) }}</span>
               </div>
@@ -769,7 +827,7 @@ watch(selectedTripId, () => {
                       # <i :class="[sortIcon('taxon'), 'ms-1']"></i>
                     </button>
                   </th>
-                  <th class="text-center" v-if="selectedVisitId">
+                  <th class="text-center" v-if="showInterestColumn">
                     <button
                       class="btn btn-link p-0 text-decoration-none text-reset"
                       type="button"
@@ -795,7 +853,7 @@ watch(selectedTripId, () => {
                       Species <i :class="[sortIcon('name'), 'ms-1']"></i>
                     </button>
                   </th>
-                  <th class="text-end" v-if="locationFiltersActive">
+                  <th class="text-end" v-if="showRankColumn">
                     <button
                       class="btn btn-link p-0 fw-semibold text-decoration-none text-reset"
                       @click="toggleSort('rank')"
@@ -808,17 +866,19 @@ watch(selectedTripId, () => {
                       Top <i :class="[sortIcon('rank'), 'ms-1']"></i>
                     </button>
                   </th>
-                  <th class="text-end" v-if="locationFiltersActive">
+                  <th class="text-end">
                     <button
                       class="btn btn-link p-0 fw-semibold text-decoration-none text-reset"
-                      @click="toggleSort('location')"
+                      @click="toggleSort(rateColumnSortKey)"
                       data-bs-toggle="popover"
                       data-bs-trigger="hover focus"
                       data-bs-placement="top"
-                      data-bs-title="Location rate"
-                      data-bs-content="Detection rate within the selected location filter."
+                      :data-bs-title="rateColumnPopoverTitle"
+                      :data-bs-content="rateColumnPopoverContent"
                     >
-                      Location <i :class="[sortIcon('location'), 'ms-1']"></i>
+                      <span class="d-none d-lg-inline">{{ rateColumnLabel }}</span>
+                      <span class="d-lg-none">{{ rateColumnShortLabel }}</span>
+                      <i :class="[sortIcon(rateColumnSortKey), 'ms-1']"></i>
                     </button>
                   </th>
                   <th class="text-end">
@@ -836,22 +896,7 @@ watch(selectedTripId, () => {
                       <i :class="[sortIcon('detection'), 'ms-1']"></i>
                     </button>
                   </th>
-                  <th class="text-end">
-                    <button
-                      class="btn btn-link p-0 fw-semibold text-decoration-none text-reset"
-                      @click="toggleSort('avg')"
-                      data-bs-toggle="popover"
-                      data-bs-trigger="hover focus"
-                      data-bs-placement="top"
-                      data-bs-title="Average trip"
-                      data-bs-content="Average detection rate across visits."
-                    >
-                      <span class="d-none d-lg-inline">Average Trip</span>
-                      <span class="d-lg-none">Avg. Trip</span>
-                      <i :class="[sortIcon('avg'), 'ms-1']"></i>
-                    </button>
-                  </th>
-                  <th class="text-end">
+                  <th class="text-end" v-if="showEbdColumn">
                     <button
                       class="btn btn-link p-0 fw-semibold text-decoration-none text-reset"
                       @click="toggleSort('overall')"
@@ -876,7 +921,7 @@ watch(selectedTripId, () => {
                   <td class="text-muted d-none d-sm-table-cell">
                     {{ index + 1 }}
                   </td>
-                  <td class="text-center" v-if="selectedVisitId">
+                  <td class="text-center" v-if="showInterestColumn">
                     <input
                       class="form-check-input"
                       type="checkbox"
@@ -925,15 +970,16 @@ watch(selectedTripId, () => {
                       </span>
                     </div>
                   </td>
-                  <td class="text-end" v-if="locationFiltersActive">
+                  <td class="text-end" v-if="showRankColumn">
                     {{ species.locationRank ?? "-" }}
                   </td>
-                  <td class="text-end rate-cell" v-if="locationFiltersActive">
-                    {{ formatRate(species.locationRate) }}
+                  <td class="text-end rate-cell">
+                    {{ formatRate(hasSelectedVisit ? species.locationRate : species.avgRate) }}
                   </td>
                   <td class="text-end">{{ formatPercent(species.totalProbability) }}</td>
-                  <td class="text-end rate-cell">{{ formatRate(species.avgRate) }}</td>
-                  <td class="text-end rate-cell">{{ formatRate(species.overallRate) }}</td>
+                  <td class="text-end rate-cell" v-if="showEbdColumn">
+                    {{ formatRate(species.overallRate) }}
+                  </td>
                 </tr>
                 <tr v-if="speciesWithProbabilities.length === 0">
                   <td :colspan="speciesColspan" class="text-muted small">
@@ -1002,36 +1048,17 @@ watch(selectedTripId, () => {
   min-width: 0;
 }
 
-.location-select-control :deep(.vs__dropdown-toggle) {
-  min-height: 40px;
-  padding: 4px 10px;
-  border-radius: 10px;
-}
-
 .location-select-control :deep(.vs__selected-options) {
   flex-wrap: nowrap;
   overflow: hidden;
-  gap: 4px;
 }
 
 .location-select-control :deep(.vs__selected) {
-  margin: 0;
   padding: 2px 6px;
-  font-size: 0.75rem;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 100%;
-}
-
-.location-select-control :deep(.vs__search) {
-  margin: 0;
-  padding: 0;
-  font-size: 0.9rem;
-}
-
-.location-select-control :deep(.vs__dropdown-menu) {
-  max-height: 200px;
 }
 
 .visit-option-label {
@@ -1079,22 +1106,22 @@ watch(selectedTripId, () => {
 
 .filter-range::-webkit-slider-runnable-track {
   height: 6px;
-  background: #b9c0c8;
+  background: rgba(var(--app-color-deep-teal-rgb), 0.22);
   border-radius: 999px;
 }
 
 .filter-range::-moz-range-track {
   height: 6px;
-  background: #b9c0c8;
+  background: rgba(var(--app-color-deep-teal-rgb), 0.22);
   border-radius: 999px;
 }
 
 .filter-range:disabled::-webkit-slider-runnable-track {
-  background: #d7dde3;
+  background: rgba(var(--app-color-slate-rgb), 0.16);
 }
 
 .filter-range:disabled::-moz-range-track {
-  background: #d7dde3;
+  background: rgba(var(--app-color-slate-rgb), 0.16);
 }
 
 .filter-sliders .text-muted {
@@ -1121,19 +1148,19 @@ watch(selectedTripId, () => {
 }
 
 .species-row:hover td {
-  background-color: #f4f6f8;
+  background-color: rgba(var(--app-color-deep-teal-rgb), 0.05);
 }
 
 .species-row--target td {
-  background-color: #fff3cd;
+  background-color: rgba(var(--app-color-gold-rgb), 0.18);
 }
 
 .species-row--target:hover td {
-  background-color: #ffe8a1;
+  background-color: rgba(var(--app-color-gold-rgb), 0.28);
 }
 
 .expected-summary {
-  background: #f8fafc;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.86), rgba(var(--app-color-deep-teal-rgb), 0.05));
   border-radius: 10px;
   padding: 0.75rem 0.9rem;
 }
@@ -1153,7 +1180,7 @@ watch(selectedTripId, () => {
 }
 
 .expected-summary-lead {
-  color: #415266;
+  color: var(--app-color-slate);
 }
 
 .expected-summary-values {
@@ -1171,20 +1198,20 @@ watch(selectedTripId, () => {
   gap: 0.25rem;
   padding: 0.08rem 0.5rem;
   border-radius: 999px;
-  background: #e9eff5;
-  color: #2f4153;
+  background: rgba(var(--app-color-deep-teal-rgb), 0.1);
+  color: var(--app-color-deep-teal);
 }
 
 .expected-summary-pill--primary {
   font-size: 1.06em;
   font-weight: 700;
-  background: #dbeaf7;
-  color: #1f3d56;
+  background: rgba(var(--app-color-green-rgb), 0.14);
+  color: var(--app-color-green);
 }
 
 .expected-summary-pill--alert {
-  background: #fff0f0;
-  color: #9b1c1c;
+  background: rgba(var(--app-color-gold-rgb), 0.2);
+  color: var(--app-color-gold-deep);
 }
 
 .expected-summary-pill-label {
@@ -1196,7 +1223,7 @@ watch(selectedTripId, () => {
 }
 
 .expected-summary-sep {
-  color: #7c8a99;
+  color: rgba(var(--app-color-slate-rgb), 0.7);
   line-height: 1;
 }
 

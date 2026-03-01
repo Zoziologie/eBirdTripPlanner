@@ -1,11 +1,14 @@
 <script setup>
-import { ref, onMounted, onBeforeUnmount, watch, computed } from "vue";
+import { ref, shallowRef, onMounted, onBeforeUnmount, watch, computed } from "vue";
 import { db } from "../data/db";
 import Initiate from "../components/Initiate.vue";
 import LifeList from "../components/LifeList.vue";
+import { useTripBundleLoader } from "../composables/useTripBundleLoader";
 import { trips, selectedTripId, refreshTrips } from "../state/tripSelection";
 import { bumpEbdUpdatedAt } from "../state/ebdUpdates";
+import { resolveRecordConflict, withUpdatedAt } from "../utils/recordConflicts";
 import { resolveSpeciesTaxon, extractTaxonFields } from "../utils/taxonomy";
+import { EMPTY_REGION } from "../utils/tripData";
 import zoziologieLogoUrl from "../assets/zoziologie-logo.svg";
 
 const tripForm = ref({
@@ -13,13 +16,12 @@ const tripForm = ref({
   tripReportId: "",
 });
 
-const processedData = ref(null);
+const processedData = shallowRef(null);
 const saveStatus = ref("");
 const loadedTrip = ref(null);
 const isExporting = ref(false);
 const isImporting = ref(false);
 const transferStatus = ref("");
-const statusMessage = computed(() => transferStatus.value || saveStatus.value);
 const isSyncingTripReport = ref(false);
 const tripReportStatus = ref("");
 const tripReportAlertMessage = computed(() => {
@@ -51,6 +53,10 @@ const lastTripReportSyncTime = ref(null);
 const installPromptEvent = ref(null);
 const isPwaInstalled = ref(false);
 const canInstallPwa = computed(() => Boolean(installPromptEvent.value) && !isPwaInstalled.value);
+const { loadTripBundle, resetTripBundleLoader } = useTripBundleLoader({
+  includeTrip: true,
+  includeEbd: true,
+});
 const appVersion = __APP_VERSION__;
 const repoUrl = "https://github.com/Zoziologie/eBirdTripPlanner";
 const sponsorUrl = "https://github.com/sponsors/Zoziologie";
@@ -115,11 +121,19 @@ const buildUniqueTripName = (baseName) => {
   return candidate;
 };
 
+const cloneTripFilters = (filters) => ({
+  minYear: filters?.minYear ?? null,
+  maxYear: filters?.maxYear ?? null,
+  minMonth: filters?.minMonth ?? null,
+  maxMonth: filters?.maxMonth ?? null,
+  state: Array.isArray(filters?.state) ? [...filters.state] : [],
+  county: Array.isArray(filters?.county) ? [...filters.county] : [],
+});
+
 const createTripFromProcessed = async (payload) => {
   const now = Date.now();
   const id = crypto.randomUUID();
   const tripName = buildUniqueTripName(payload?.region?.name);
-  const safePayload = JSON.parse(JSON.stringify(payload));
   await db.trips.put({
     id,
     name: tripName,
@@ -129,10 +143,10 @@ const createTripFromProcessed = async (payload) => {
   });
   await db.ebd.put({
     tripId: id,
-    speciesList: safePayload.speciesList,
-    locations: safePayload.locations,
-    region: safePayload.region,
-    filters: safePayload.filters,
+    speciesList: payload?.speciesList || [],
+    locations: payload?.locations || [],
+    region: payload?.region || { code: "", name: "" },
+    filters: cloneTripFilters(payload?.filters),
     updatedAt: now,
   });
   bumpEbdUpdatedAt();
@@ -160,8 +174,14 @@ const hasDuplicateRename = computed(() => {
 });
 
 const speciesList = computed(() => processedData.value?.speciesList || []);
-const region = computed(() => processedData.value?.region || { code: "", name: "" });
+const region = computed(() => processedData.value?.region || EMPTY_REGION);
 const totalSpeciesCount = computed(() => speciesList.value.length);
+const hasLifeList = computed(() =>
+  speciesList.value.some((species) => species.liferWorld === true || species.liferWorld === false),
+);
+const hasRegionList = computed(() =>
+  speciesList.value.some((species) => species.liferRegion === true || species.liferRegion === false),
+);
 const isTripConfirmedSpecies = (species) => species?.tripReportSeen === true;
 const isWorldTargetSpecies = (species) =>
   species?.liferWorld === true && !isTripConfirmedSpecies(species);
@@ -177,19 +197,6 @@ const newTripCount = computed(
   () => speciesList.value.filter((species) => species.tripReportSeen === false).length,
 );
 
-const persistTripDetails = async () => {
-  if (!selectedTripId.value) return;
-  if (!tripForm.value.name) return;
-  const now = Date.now();
-  await db.trips.update(selectedTripId.value, {
-    name: tripForm.value.name,
-    updatedAt: now,
-  });
-  await loadTrips();
-  loadedTrip.value = await db.trips.get(selectedTripId.value);
-  setSaveStatus("Trip details updated.");
-};
-
 const openRenameModal = () => {
   if (!selectedTripId.value) return;
   renameTripName.value = tripForm.value.name || loadedTrip.value?.name || "";
@@ -204,24 +211,16 @@ const saveRenameTrip = async () => {
   if (!selectedTripId.value) return;
   const nextName = renameTripName.value.trim();
   if (!nextName || hasDuplicateRename.value) return;
-  const now = Date.now();
-  await db.trips.update(selectedTripId.value, { name: nextName, updatedAt: now });
-  tripForm.value.name = nextName;
-  await loadTrips();
-  loadedTrip.value = await db.trips.get(selectedTripId.value);
-  setSaveStatus("Trip details updated.");
+  const updated = await updateCurrentTrip({ name: nextName });
+  if (!updated) return;
   closeRenameModal();
 };
 
 const persistTripReportId = async () => {
   if (!selectedTripId.value) return;
-  const now = Date.now();
-  await db.trips.update(selectedTripId.value, {
+  await updateCurrentTrip({
     tripReportId: tripForm.value.tripReportId,
-    updatedAt: now,
   });
-  loadedTrip.value = await db.trips.get(selectedTripId.value);
-  setSaveStatus("Trip details updated.");
 };
 
 let statusTimer = null;
@@ -233,35 +232,114 @@ const setSaveStatus = (message) => {
   }, 2000);
 };
 
-const handleSpeciesListUpdate = async (updatedList) => {
-  if (!selectedTripId.value || !processedData.value) return;
-  processedData.value = {
-    ...processedData.value,
-    speciesList: updatedList,
-  };
-  await db.ebd.where("tripId").equals(selectedTripId.value).modify({
-    speciesList: updatedList,
-    updatedAt: Date.now(),
-  });
-  bumpEbdUpdatedAt();
-  setSaveStatus("Trip details updated.");
+const reloadCurrentTripState = async (message) => {
+  await loadTrips();
+  if (selectedTripId.value) {
+    await loadTripData(selectedTripId.value);
+  } else {
+    resetLocalState();
+  }
+  if (message) setSaveStatus(message);
 };
 
-const loadTripData = async (tripId) => {
-  if (!tripId) {
-    resetLocalState();
-    return;
+const updateCurrentTrip = async (updates, successMessage = "Trip details updated.") => {
+  if (!selectedTripId.value) return false;
+  const currentTrip = await db.trips.get(selectedTripId.value);
+  if (!currentTrip) {
+    await reloadCurrentTripState("Trip no longer exists.");
+    return false;
   }
-  loadedTrip.value = await db.trips.get(tripId);
+
+  const localUpdatedAt = Number(loadedTrip.value?.updatedAt ?? 0);
+  const dbUpdatedAt = Number(currentTrip.updatedAt ?? 0);
+  if (loadedTrip.value) {
+    const shouldOverwrite = await resolveRecordConflict({
+      label: "This trip",
+      localUpdatedAt,
+      currentUpdatedAt: dbUpdatedAt,
+      reload: async () => {
+        await reloadCurrentTripState("Latest trip data reloaded.");
+      },
+    });
+    if (!shouldOverwrite) return false;
+  }
+
+  const nextUpdates = withUpdatedAt(updates);
+  await db.trips.update(selectedTripId.value, nextUpdates);
+  await loadTrips();
+  loadedTrip.value = await db.trips.get(selectedTripId.value);
   if (loadedTrip.value) {
     tripForm.value = {
       name: loadedTrip.value.name || "",
       tripReportId: loadedTrip.value.tripReportId || "",
     };
   }
+  if (successMessage) setSaveStatus(successMessage);
+  return true;
+};
+
+const updateCurrentEbd = async (updates, successMessage = "Trip details updated.") => {
+  if (!selectedTripId.value) return false;
+  const currentEbd = await db.ebd.get(selectedTripId.value);
+  if (!currentEbd) {
+    await reloadCurrentTripState("Trip data no longer exists.");
+    return false;
+  }
+
+  const localUpdatedAt = Number(processedData.value?.updatedAt ?? 0);
+  const dbUpdatedAt = Number(currentEbd.updatedAt ?? 0);
+  if (processedData.value) {
+    const shouldOverwrite = await resolveRecordConflict({
+      label: "This trip data",
+      localUpdatedAt,
+      currentUpdatedAt: dbUpdatedAt,
+      reload: async () => {
+        await reloadCurrentTripState("Latest trip data reloaded.");
+      },
+    });
+    if (!shouldOverwrite) return false;
+  }
+
+  const nextEntry = {
+    ...currentEbd,
+    ...withUpdatedAt(updates),
+    tripId: selectedTripId.value,
+  };
+  await db.ebd.put(nextEntry);
+  processedData.value = nextEntry;
+  bumpEbdUpdatedAt();
+  if (successMessage) setSaveStatus(successMessage);
+  return true;
+};
+
+const handleSpeciesListUpdate = async (updatedList) => {
+  if (!selectedTripId.value || !processedData.value) return;
+  await updateCurrentEbd({
+    speciesList: updatedList,
+  });
+};
+
+const loadTripData = async (tripId) => {
+  if (!tripId) {
+    resetTripBundleLoader();
+    resetLocalState();
+    return;
+  }
+
+  const { bundle, isCurrent } = await loadTripBundle(tripId);
+  if (!isCurrent) return;
+
+  loadedTrip.value = bundle.trip;
+  if (loadedTrip.value) {
+    tripForm.value = {
+      name: loadedTrip.value.name || "",
+      tripReportId: loadedTrip.value.tripReportId || "",
+    };
+  } else {
+    tripForm.value = { name: "", tripReportId: "" };
+  }
   lastTripReportSyncTime.value = loadedTrip.value?.tripReportSyncedAt || null;
-  const ebd = await db.ebd.where("tripId").equals(tripId).first();
-  processedData.value = ebd || null;
+  processedData.value = bundle.ebd || null;
   saveStatus.value = "";
 };
 
@@ -284,6 +362,24 @@ const deleteTrip = async () => {
   const tripName = loadedTrip.value?.name || "this trip";
   const confirmed = window.confirm(`Delete ${tripName}? This cannot be undone.`);
   if (!confirmed) return;
+  const currentTrip = await db.trips.get(selectedTripId.value);
+  if (!currentTrip) {
+    await reloadCurrentTripState("Trip no longer exists.");
+    return;
+  }
+  const localUpdatedAt = Number(loadedTrip.value?.updatedAt ?? 0);
+  const dbUpdatedAt = Number(currentTrip.updatedAt ?? 0);
+  if (loadedTrip.value) {
+    const shouldDelete = await resolveRecordConflict({
+      label: "This trip",
+      localUpdatedAt,
+      currentUpdatedAt: dbUpdatedAt,
+      reload: async () => {
+        await reloadCurrentTripState("Latest trip data reloaded.");
+      },
+    });
+    if (!shouldDelete) return;
+  }
   const tripId = selectedTripId.value;
   await db.trips.delete(tripId);
   await db.ebd.where("tripId").equals(tripId).delete();
@@ -303,12 +399,6 @@ const sanitizeFilename = (value) => {
 };
 
 const normalizeTripReportId = (value) => (value || "").trim();
-
-const getTripReportUrl = () => {
-  const id = normalizeTripReportId(tripForm.value.tripReportId);
-  if (!id) return "";
-  return `https://ebird.org/tripreport/${id}`;
-};
 
 const extractTripReportSpecies = (payload) => {
   if (!payload) return [];
@@ -477,15 +567,14 @@ const syncTripReportSpecies = async () => {
     });
 
     const syncTimestamp = Date.now();
-    processedData.value = {
-      ...processedData.value,
-      speciesList: nextList,
-    };
-    await db.ebd.where("tripId").equals(selectedTripId.value).modify({
+    const updated = await updateCurrentEbd({
       speciesList: nextList,
       updatedAt: syncTimestamp,
-    });
-    bumpEbdUpdatedAt();
+    }, "");
+    if (!updated) {
+      tripReportStatus.value = "Trip report sync canceled. Latest trip data reloaded.";
+      return;
+    }
     await db.trips.update(selectedTripId.value, { tripReportSyncedAt: syncTimestamp });
     lastTripReportSyncTime.value = syncTimestamp;
     tripReportStatus.value =
@@ -692,12 +781,15 @@ const importTrip = async (event) => {
             Trip actions below apply to the selected trip.
           </div>
           <div class="d-flex align-items-center gap-2 mt-3 flex-wrap" v-if="selectedTripId">
-            <button class="btn btn-outline-secondary btn-sm flex-fill" @click="openRenameModal">
+            <button
+              class="btn btn-sm flex-fill app-action-btn app-action-btn--teal"
+              @click="openRenameModal"
+            >
               <i class="bi bi-pencil-square me-1"></i>
               Rename
             </button>
             <button
-              class="btn btn-outline-primary btn-sm flex-fill"
+              class="btn btn-sm flex-fill app-action-btn app-action-btn--green"
               @click="exportTrip"
               :disabled="!selectedTripId || isExporting"
             >
@@ -706,7 +798,7 @@ const importTrip = async (event) => {
               Export
             </button>
             <button
-              class="btn btn-outline-secondary btn-sm flex-fill text-danger"
+              class="btn btn-sm flex-fill app-action-btn app-action-btn--danger"
               @click="deleteTrip"
             >
               <i class="bi bi-trash3 me-1"></i>
@@ -804,11 +896,11 @@ const importTrip = async (event) => {
           <div v-if="totalSpeciesCount" class="mt-3 pt-2 border-top">
             <div class="d-flex flex-wrap gap-3 small">
               <div><strong>Total Species (EBD):</strong> {{ totalSpeciesCount }}</div>
-              <div>
+              <div v-if="hasLifeList">
                 <strong>New for World:</strong>
                 <span class="text-danger fw-semibold ms-1">{{ newWorldCount }}</span>
               </div>
-              <div>
+              <div v-if="hasRegionList">
                 <strong>New for Region:</strong>
                 <span class="text-danger fw-semibold ms-1">{{ newRegionCount }}</span>
               </div>
@@ -842,7 +934,7 @@ const importTrip = async (event) => {
         rel="noopener"
         class="text-decoration-none text-reset d-inline-flex align-items-center gap-1"
       >
-        <i class="bi bi-heart-fill text-danger"></i>
+        <i class="bi bi-heart-fill text-warning"></i>
         <span>Sponsor</span>
       </a>
       <span class="tech-footer-divider">•</span>
@@ -854,9 +946,7 @@ const importTrip = async (event) => {
         title="Zoziologie"
       >
         <span>Powered by</span>
-        <span class="zoziologie-logo-wrap">
-          <img :src="zoziologieLogoUrl" alt="Zoziologie Logo" class="zoziologie-logo" />
-        </span>
+        <img :src="zoziologieLogoUrl" alt="Zoziologie Logo" class="zoziologie-logo" />
         <span class="fw-semibold">Zoziologie</span>
       </a>
     </div>
@@ -912,16 +1002,6 @@ const importTrip = async (event) => {
 
 .tech-footer-divider {
   opacity: 0.6;
-}
-
-.zoziologie-logo-wrap {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 4px 6px;
-  border-radius: 8px;
-  background: linear-gradient(135deg, #2c3e50 0%, #3f5f78 100%);
-  border: 1px solid rgba(255, 255, 255, 0.2);
 }
 
 .zoziologie-logo {
