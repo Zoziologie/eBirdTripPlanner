@@ -236,11 +236,12 @@ const searchableLocations = computed(() => {
 const selectedVisitStats = computed(() => {
   const visit = selectedVisit.value;
   if (!visit || getVisitType(visit) !== "birding") {
-    return { species: 0, checklists: 0, locations: 0 };
+    return { species: 0, checklists: 0, locations: 0, medianDurationLabel: "" };
   }
   const center = [visit.longitude, visit.latitude];
   const radiusKm = Number(visit.radiusKm) || 0;
   const speciesSet = new Set();
+  const durations = [];
   let checklistTotal = 0;
   let locationCount = 0;
 
@@ -251,6 +252,12 @@ const selectedVisitStats = computed(() => {
     if (distanceKm <= radiusKm) {
       locationCount += 1;
       checklistTotal += location.checklist_count || 0;
+      (Array.isArray(location.checklist) ? location.checklist : []).forEach((checklist) => {
+        const minutes = Number(checklist?.duration_minutes);
+        if (Number.isFinite(minutes) && minutes > 0) {
+          durations.push(minutes);
+        }
+      });
       const entries = location.species_checklist_counts || [];
       for (const [code] of entries) {
         speciesSet.add(code);
@@ -258,10 +265,22 @@ const selectedVisitStats = computed(() => {
     }
   });
 
+  const sortedDurations = durations.slice().sort((a, b) => a - b);
+  let medianDurationLabel = "";
+  if (sortedDurations.length) {
+    const middle = Math.floor(sortedDurations.length / 2);
+    const medianMinutes =
+      sortedDurations.length % 2 === 0
+        ? Math.round((sortedDurations[middle - 1] + sortedDurations[middle]) / 2)
+        : sortedDurations[middle];
+    medianDurationLabel = formatMinutesCompact(medianMinutes);
+  }
+
   return {
     species: speciesSet.size,
     checklists: checklistTotal,
     locations: locationCount,
+    medianDurationLabel,
   };
 });
 
@@ -684,6 +703,15 @@ const formatDuration = (seconds) => {
   const hours = Math.floor(minutes / 60);
   const rem = minutes % 60;
   return `${hours}h ${rem}m`;
+};
+
+const formatMinutesCompact = (minutes) => {
+  const totalMinutes = Math.max(0, Math.round(Number(minutes) || 0));
+  if (totalMinutes < 60) return `${totalMinutes}m`;
+  const hours = Math.floor(totalMinutes / 60);
+  const rem = totalMinutes % 60;
+  if (rem === 0) return `${hours}h`;
+  return `${hours}h${String(rem).padStart(2, "0")}`;
 };
 
 const getEbirdChecklistUrl = (checklistId) => {
@@ -2441,6 +2469,9 @@ onBeforeUnmount(() => {
                   {{ selectedVisitStats.species }} species ·
                   {{ selectedVisitStats.checklists }} checklists ·
                   {{ selectedVisitStats.locations }} locations
+                  <template v-if="selectedVisitStats.medianDurationLabel">
+                    · duration: {{ selectedVisitStats.medianDurationLabel }}
+                  </template>
                 </div>
               </div>
             </transition>
@@ -2596,7 +2627,7 @@ onBeforeUnmount(() => {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: 1rem;
+  padding: 0.5rem 1rem 1rem;
 }
 
 .build-trip-pane {
