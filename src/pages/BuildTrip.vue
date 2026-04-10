@@ -401,6 +401,7 @@ const formatVisitDate = (value) => {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "No date";
   return date.toLocaleDateString(undefined, {
+    weekday: "short",
     day: "numeric",
     month: "short",
     year: "numeric",
@@ -432,11 +433,20 @@ const groupedVisits = computed(() => {
   sortedVisits.value.forEach((visit, index) => {
     const dateKey = formatVisitDate(visit.dateTime);
     if (!byDate.has(dateKey)) {
-      const group = { dateKey, visits: [] };
+      const group = { dateKey, visits: [], driveDurationS: 0, birdingDurationHours: 0 };
       byDate.set(dateKey, group);
       groups.push(group);
     }
-    byDate.get(dateKey).visits.push({ ...visit, globalIndex: index });
+    const group = byDate.get(dateKey);
+    group.visits.push({ ...visit, globalIndex: index });
+    group.driveDurationS += Math.max(0, Number(visit.routeDurationS) || 0);
+    if (getVisitType(visit) === "birding") {
+      group.birdingDurationHours += Math.max(0, Number(visit.durationMin) || 0);
+    }
+  });
+  groups.forEach((group) => {
+    group.driveLabel = formatDriveDurationCompact(group.driveDurationS);
+    group.birdingLabel = formatHoursCompact(group.birdingDurationHours);
   });
   return groups;
 });
@@ -712,6 +722,23 @@ const formatMinutesCompact = (minutes) => {
   const rem = totalMinutes % 60;
   if (rem === 0) return `${hours}h`;
   return `${hours}h${String(rem).padStart(2, "0")}`;
+};
+
+const formatDriveDurationCompact = (seconds) => {
+  const totalMinutes = Math.max(0, Math.round((Number(seconds) || 0) / 60));
+  if (!totalMinutes) return "";
+  if (totalMinutes < 60) return `${totalMinutes}`;
+  const hours = Math.floor(totalMinutes / 60);
+  const rem = totalMinutes % 60;
+  if (rem === 0) return `${hours}h`;
+  return `${hours}h ${String(rem).padStart(2, "0")}`;
+};
+
+const formatHoursCompact = (hoursValue) => {
+  const totalHours = Math.max(0, Number(hoursValue) || 0);
+  if (!totalHours) return "";
+  const roundedHours = Math.round(totalHours * 10) / 10;
+  return `${roundedHours}h`;
 };
 
 const getEbirdChecklistUrl = (checklistId) => {
@@ -2288,7 +2315,25 @@ onBeforeUnmount(() => {
                 <div
                   class="small fw-semibold text-muted bg-light py-1 px-3 border-top border-bottom position-sticky top-0"
                 >
-                  <span>{{ group.dateKey }}</span>
+                  <div class="d-flex align-items-center justify-content-between gap-2">
+                    <span>{{ group.dateKey }}</span>
+                    <div class="d-inline-flex align-items-center gap-2 small text-muted">
+                      <span
+                        v-if="group.driveLabel"
+                        class="d-inline-flex align-items-center gap-1 text-nowrap"
+                      >
+                        <i class="bi bi-signpost-split"></i>
+                        {{ group.driveLabel }}
+                      </span>
+                      <span
+                        v-if="group.birdingLabel"
+                        class="d-inline-flex align-items-center gap-1 text-nowrap"
+                      >
+                        <i class="bi bi-feather"></i>
+                        {{ group.birdingLabel }}
+                      </span>
+                    </div>
+                  </div>
                 </div>
                 <button
                   v-for="visit in group.visits"
