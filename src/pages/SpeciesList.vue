@@ -1,5 +1,6 @@
 <script setup>
 import { ref, shallowRef, onMounted, watch, computed, nextTick } from "vue";
+import { useRoute } from "vue-router";
 import { Tooltip, Popover } from "bootstrap";
 import vSelect from "vue-select";
 import "vue-select/dist/vue-select.css";
@@ -20,6 +21,7 @@ const {
   loadTripBundle,
   resetTripBundleLoader,
 } = useTripBundleLoader({ includeTrip: true, includeEbd: true, includeVisits: true });
+const route = useRoute();
 
 const sortKey = ref("rank");
 const sortDir = ref("asc");
@@ -31,6 +33,10 @@ const liferFilters = ref({
 });
 const cumulativeTripMax = ref(0.95);
 const locationMinRate = ref(0.05);
+const DEFAULT_CUMULATIVE_TRIP_MAX = 0.95;
+const DEFAULT_LOCATION_MIN_RATE = 0.05;
+const ROUTE_FILTER_CUMULATIVE_TRIP_MAX = 1;
+const ROUTE_FILTER_LOCATION_MIN_RATE = 0;
 
 const selectedTrip = computed(
   () => trips.value.find((item) => item.id === selectedTripId.value) || null,
@@ -91,6 +97,36 @@ const toSpeciesCountsMap = (counts) => {
     map.set(code, toNumber(count, 0));
   });
   return map;
+};
+
+const emptyLiferFilters = () => ({
+  life: false,
+  region: false,
+  trip: false,
+  interest: false,
+});
+
+const normalizeRouteFilter = (value) => {
+  if (typeof value !== "string") return null;
+  if (value === "life" || value === "region" || value === "trip" || value === "interest") {
+    return value;
+  }
+  return null;
+};
+
+const applyRouteFilter = (value) => {
+  const nextFilters = emptyLiferFilters();
+  const filter = normalizeRouteFilter(value);
+  if (filter) {
+    selectedVisitId.value = "";
+    nextFilters[filter] = true;
+    cumulativeTripMax.value = ROUTE_FILTER_CUMULATIVE_TRIP_MAX;
+    locationMinRate.value = ROUTE_FILTER_LOCATION_MIN_RATE;
+  } else {
+    cumulativeTripMax.value = DEFAULT_CUMULATIVE_TRIP_MAX;
+    locationMinRate.value = DEFAULT_LOCATION_MIN_RATE;
+  }
+  liferFilters.value = nextFilters;
 };
 
 const loadTripData = async (tripId) => {
@@ -637,6 +673,13 @@ const getSpeciesMapUrl = (code) => {
 };
 
 watch(selectedTripId, loadTripData, { immediate: true });
+watch(
+  () => route.query.filter,
+  (value) => {
+    applyRouteFilter(Array.isArray(value) ? value[0] : value);
+  },
+  { immediate: true },
+);
 watch(ebdUpdatedAt, async () => {
   if (!selectedTripId.value) return;
   await loadTripData(selectedTripId.value);

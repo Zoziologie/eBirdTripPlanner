@@ -23,6 +23,7 @@ const isExporting = ref(false);
 const isImporting = ref(false);
 const transferStatus = ref("");
 const isSyncingTripReport = ref(false);
+const isClearingTripReport = ref(false);
 const tripReportStatus = ref("");
 const tripReportAlertMessage = computed(() => {
   if (tripReportStatus.value) return tripReportStatus.value;
@@ -196,6 +197,21 @@ const newRegionCount = computed(
 const newTripCount = computed(
   () => speciesList.value.filter((species) => species.tripReportSeen === false).length,
 );
+const hasTripReportState = computed(() => {
+  if (tripForm.value.tripReportId) return true;
+  if (lastTripReportSyncTime.value) return true;
+  return speciesList.value.some(
+    (species) => species.tripReportSeen === true || species.tripReportSeen === false,
+  );
+});
+const worldTargetsLink = Object.freeze({
+  path: "/speciesList",
+  query: { filter: "life" },
+});
+const regionTargetsLink = Object.freeze({
+  path: "/speciesList",
+  query: { filter: "region" },
+});
 
 const openRenameModal = () => {
   if (!selectedTripId.value) return;
@@ -473,6 +489,20 @@ const collectEbdSpeciesCodes = (locations) => {
   return codes;
 };
 
+const clearTripReportSpeciesState = (list, locations) => {
+  const ebdCodeSet = collectEbdSpeciesCodes(locations);
+  const baselineSpecies = (Array.isArray(list) ? list : []).filter((species) => {
+    if (ebdCodeSet.size === 0) return true;
+    const canonicalCode = getCanonicalSpeciesCode(species);
+    return canonicalCode && ebdCodeSet.has(canonicalCode);
+  });
+
+  return baselineSpecies.map((species) => {
+    const { tripReportSeen, ...rest } = species;
+    return rest;
+  });
+};
+
 const formatSpeciesLabel = (species) => {
   const common = (species?.commonName || "").trim();
   const scientific = (species?.scientificName || "").trim();
@@ -585,6 +615,101 @@ const syncTripReportSpecies = async () => {
     tripReportStatus.value = `Trip report sync failed: ${error.message || error}`;
   } finally {
     isSyncingTripReport.value = false;
+  }
+};
+
+const clearTripReportSync = async () => {
+  if (!selectedTripId.value || !hasTripReportState.value) return;
+  const confirmed = window.confirm(
+    "Clear the trip report ID and remove all synced trip report statuses for this trip?",
+  );
+  if (!confirmed) return;
+
+  isClearingTripReport.value = true;
+  tripReportStatus.value = "";
+  try {
+    const currentTrip = await db.trips.get(selectedTripId.value);
+    if (!currentTrip) {
+      await reloadCurrentTripState("Trip no longer exists.");
+      return;
+    }
+
+    const localTripUpdatedAt = Number(loadedTrip.value?.updatedAt ?? 0);
+    const dbTripUpdatedAt = Number(currentTrip.updatedAt ?? 0);
+    if (loadedTrip.value) {
+      const shouldOverwriteTrip = await resolveRecordConflict({
+        label: "This trip",
+        localUpdatedAt: localTripUpdatedAt,
+        currentUpdatedAt: dbTripUpdatedAt,
+        reload: async () => {
+          await reloadCurrentTripState("Latest trip data reloaded.");
+        },
+      });
+      if (!shouldOverwriteTrip) return;
+    }
+
+    const currentEbd = await db.ebd.get(selectedTripId.value);
+    if (processedData.value && currentEbd) {
+      const localEbdUpdatedAt = Number(processedData.value?.updatedAt ?? 0);
+      const dbEbdUpdatedAt = Number(currentEbd.updatedAt ?? 0);
+      const shouldOverwriteEbd = await resolveRecordConflict({
+        label: "This trip data",
+        localUpdatedAt: localEbdUpdatedAt,
+        currentUpdatedAt: dbEbdUpdatedAt,
+        reload: async () => {
+          await reloadCurrentTripState("Latest trip data reloaded.");
+        },
+      });
+      if (!shouldOverwriteEbd) return;
+    }
+
+    const nextSpeciesList = clearTripReportSpeciesState(
+      processedData.value?.speciesList || currentEbd?.speciesList || [],
+      processedData.value?.locations || currentEbd?.locations || [],
+    );
+    const removedSpeciesCount = Math.max(
+      (processedData.value?.speciesList || currentEbd?.speciesList || []).length - nextSpeciesList.length,
+      0,
+    );
+    const tripUpdates = withUpdatedAt({
+      tripReportId: "",
+      tripReportSyncedAt: null,
+    });
+    const ebdUpdates = currentEbd
+      ? {
+          ...currentEbd,
+          ...withUpdatedAt({ speciesList: nextSpeciesList }),
+          tripId: selectedTripId.value,
+        }
+      : null;
+
+    await db.transaction("rw", db.trips, db.ebd, async () => {
+      await db.trips.update(selectedTripId.value, tripUpdates);
+      if (ebdUpdates) {
+        await db.ebd.put(ebdUpdates);
+      }
+    });
+
+    await loadTrips();
+    loadedTrip.value = await db.trips.get(selectedTripId.value);
+    tripForm.value = {
+      name: loadedTrip.value?.name || "",
+      tripReportId: "",
+    };
+    if (ebdUpdates) {
+      processedData.value = ebdUpdates;
+      bumpEbdUpdatedAt();
+    }
+    lastTripReportSyncTime.value = null;
+    tripReportStatus.value =
+      removedSpeciesCount > 0
+        ? `Trip report sync cleared. ${removedSpeciesCount} added non-EBD species were removed.`
+        : "Trip report sync cleared.";
+    setSaveStatus("Trip report sync cleared.");
+  } catch (error) {
+    tripReportStatus.value = `Trip report clear failed: ${error.message || error}`;
+  } finally {
+    isClearingTripReport.value = false;
   }
 };
 
@@ -871,11 +996,26 @@ const importTrip = async (event) => {
                   class="btn btn-outline-secondary"
                   type="button"
                   @click="syncTripReportSpecies"
-                  :disabled="!tripForm.tripReportId || isSyncingTripReport"
+                  :disabled="!tripForm.tripReportId || isSyncingTripReport || isClearingTripReport"
                   aria-label="Sync trip report species list"
                 >
                   <span v-if="isSyncingTripReport" class="spinner-border spinner-border-sm"></span>
                   <i v-else class="bi bi-arrow-repeat"></i>
+                </button>
+                <button
+                  class="btn btn-sm app-action-btn app-action-btn--danger"
+                  type="button"
+                  @click="clearTripReportSync"
+                  :disabled="!hasTripReportState || isSyncingTripReport || isClearingTripReport"
+                  aria-label="Clear trip report ID and synced species status"
+                  title="Clear trip report ID and synced species status"
+                >
+                  <span
+                    v-if="isClearingTripReport"
+                    class="spinner-border spinner-border-sm"
+                    aria-hidden="true"
+                  ></span>
+                  <i v-else class="bi bi-trash3"></i>
                 </button>
               </div>
               <div
@@ -897,12 +1037,24 @@ const importTrip = async (event) => {
             <div class="d-flex flex-wrap gap-3 small">
               <div><strong>Total Species (EBD):</strong> {{ totalSpeciesCount }}</div>
               <div v-if="hasLifeList">
-                <strong>New for World:</strong>
-                <span class="text-danger fw-semibold ms-1">{{ newWorldCount }}</span>
+                <router-link
+                  :to="worldTargetsLink"
+                  class="text-decoration-none text-reset"
+                  title="Open species list filtered to world targets"
+                >
+                  <strong>New for World:</strong>
+                  <span class="text-danger fw-semibold ms-1">{{ newWorldCount }}</span>
+                </router-link>
               </div>
               <div v-if="hasRegionList">
-                <strong>New for Region:</strong>
-                <span class="text-danger fw-semibold ms-1">{{ newRegionCount }}</span>
+                <router-link
+                  :to="regionTargetsLink"
+                  class="text-decoration-none text-reset"
+                  title="Open species list filtered to region targets"
+                >
+                  <strong>New for Region:</strong>
+                  <span class="text-danger fw-semibold ms-1">{{ newRegionCount }}</span>
+                </router-link>
               </div>
               <div>
                 <strong>New for Trip:</strong>
