@@ -2,7 +2,7 @@
   <p class="text-muted small">
     To create a new trip, download the
     <a href="https://ebird.org/data/download" target="_blank">eBird Basic Dataset (EBD)</a>
-    and load the .zip or .txt file below. Processing happens locally in your browser.
+    and load one or more .zip or .txt files below. Processing happens locally in your browser.
   </p>
   <div class="row">
     <div class="col">
@@ -11,6 +11,7 @@
         id="fileInput"
         @change="handleFileUpload"
         accept=".txt,.zip"
+        multiple
         ref="fileInput"
         class="form-control"
         :disabled="disabled"
@@ -19,11 +20,7 @@
       <div v-if="readingFileProgress > 0" class="mt-2">
         <!-- Progress bar -->
         <div class="progress" v-if="readingFileProgress > 1">
-          <div
-            class="progress-bar progress-bar-striped progress-bar-animated"
-            role="progressbar"
-            :style="{ width: readingFileProgress + '%' }"
-          >
+          <div class="progress-bar" role="progressbar" :style="{ width: readingFileProgress + '%' }">
             {{ Math.round(readingFileProgress) }}%
           </div>
         </div>
@@ -38,7 +35,7 @@
 
       <!-- Success message - only after raw data is loaded -->
       <div
-        v-if="rawData.length > 0 && readingFileProgress === 0 && !hasError"
+        v-if="loadedRecordCount > 0 && readingFileProgress === 0 && !hasError"
         class="alert alert-success alert-dismissible mt-1 py-1"
       >
         <i class="bi bi-check-circle-fill me-2"></i>
@@ -151,7 +148,7 @@
     </div>
   </div>
   <!-- Process Button -->
-  <div class="row mt-3" v-if="rawData.length > 0 && readingFileProgress === 0">
+  <div class="row mt-3" v-if="loadedRecordCount > 0 && readingFileProgress === 0">
     <p class="text-muted">
       Select the region(s) and time range of interest. Both complete and incomplete checklists are
       kept, but reporting rates use complete checklists by default.
@@ -185,6 +182,12 @@ import {
   taxonomyByScientificName as taxonomy_sci,
   taxonomyByCode as taxonomy_code,
 } from "../utils/taxonomy";
+import {
+  addEbdRow,
+  createEbdImportAccumulator,
+  finalizeEbdImport,
+  streamEbdZipEntry,
+} from "../utils/ebdImport";
 
 export default {
   emits: ["processed"],
@@ -196,13 +199,14 @@ export default {
   },
   setup(props, { emit }) {
     const fileInput = ref(null);
-    const uploadedFile = ref(null);
+    const uploadedFiles = ref([]);
 
     // File reading state
     const readingFileProgress = ref(0);
     const readingFileStatus = ref("");
     const hasError = ref(false);
-    const rawData = shallowRef([]);
+    const loadedRecordCount = ref(0);
+    const loadedChecklists = shallowRef([]);
 
     // Checklists
     const isProcessing = ref(false);
@@ -239,12 +243,12 @@ export default {
       county: [],
     });
 
-    const resetLoadedData = () => {
-      rawData.value = [];
+    const clearLoadedResults = () => {
+      loadedRecordCount.value = 0;
+      loadedChecklists.value = [];
       checklists.value = [];
       locations.value = [];
       speciesList.value = [];
-      uploadedFile.value = null;
       availableStates.value = [];
       availableCounties.value = [];
       availableYears.value = { min: null, max: null };
@@ -254,160 +258,121 @@ export default {
       filters.maxMonth = 12;
       filters.state = [];
       filters.county = [];
+    };
+
+    const resetLoadedData = () => {
+      clearLoadedResults();
+      uploadedFiles.value = [];
       readingFileProgress.value = 0;
       if (fileInput.value) fileInput.value.value = "";
     };
 
-    const handleFileUpload = async (event) => {
-      const file = event.target.files[0];
-      if (!file) return;
-
-      // Accept .txt or .zip
-      if (file.name.endsWith(".txt")) {
-        uploadedFile.value = file;
-        hasError.value = false;
-        readFile();
-      } else if (file.name.endsWith(".zip")) {
-        readingFileStatus.value =
-          '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Retrieving TXT from ZIP file...';
-        readingFileProgress.value = 1;
-        hasError.value = false;
-        try {
-          const zip = await JSZip.loadAsync(file);
-          const largestTxtFile = Object.values(zip.files).reduce((largest, entry) => {
-            if (entry.name.toLowerCase().endsWith(".txt") && entry._data) {
-              if (!largest || entry._data.uncompressedSize > largest._data.uncompressedSize) {
-                return entry;
-              }
-            }
-            return largest;
-          }, null);
-          if (!largestTxtFile) {
-            readingFileStatus.value = "No .txt file found in ZIP.";
-            hasError.value = true;
-            event.target.value = "";
-            return;
-          }
-          const txtContent = await largestTxtFile.async("blob");
-          const txtFileObj = new File([txtContent], largestTxtFile.name, { type: "text/plain" });
-          uploadedFile.value = txtFileObj;
-          readingFileStatus.value = `TXT file extracted (${largestTxtFile.name}). Reading...`;
-          readFile();
-        } catch (err) {
-          readingFileStatus.value = "Failed to extract ZIP: " + err.message;
-          hasError.value = true;
-          event.target.value = "";
-          uploadedFile.value = null;
-        } finally {
-          readingFileProgress.value = 0;
-        }
-      } else {
-        alert("Please select a .txt or .zip file");
-        event.target.value = "";
-        uploadedFile.value = null;
-        return;
-      }
+    const finalizeImport = (accumulator) => {
+      const result = finalizeEbdImport(accumulator);
+      loadedChecklists.value = result.checklists;
+      loadedRecordCount.value = result.recordCount;
+      availableCounties.value = result.counties;
+      availableStates.value = result.states;
+      availableYears.value = { min: result.minYear, max: result.maxYear };
+      filters.minYear = result.minYear;
+      filters.maxYear = result.maxYear;
+      readingFileStatus.value =
+        `Loaded ${result.recordCount.toLocaleString()} records into ` +
+        `${loadedChecklists.value.length.toLocaleString()} checklists.`;
+      readingFileProgress.value = 0;
     };
 
-    const readFile = () => {
-      if (!uploadedFile.value) return;
+    const parseTextFile = (file, accumulator, onProgress) =>
+      new Promise((resolve, reject) => {
+        Papa.parse(file, {
+          header: true,
+          delimiter: "\t",
+          skipEmptyLines: true,
+          chunkSize: 1024 * 1024,
+          chunk(results) {
+            for (const row of results.data) addEbdRow(row, accumulator);
+            onProgress(results.meta.cursor / file.size);
+          },
+          complete: resolve,
+          error: reject,
+        });
+      });
 
-      // Reset state
-      checklists.value = [];
-      rawData.value = [];
+    const handleFileUpload = async (event) => {
+      const files = Array.from(event.target.files || []);
+      if (files.length === 0) return;
+      clearLoadedResults();
       saveStatus.value = "";
 
+      const invalidFile = files.find((file) => !/\.(txt|zip)$/i.test(file.name));
+      if (invalidFile) {
+        alert("Please select only .txt or .zip files");
+        event.target.value = "";
+        uploadedFiles.value = [];
+        return;
+      }
+
+      uploadedFiles.value = files;
+      await readFiles();
+    };
+
+    const readFiles = async () => {
+      if (uploadedFiles.value.length === 0) return;
+
+      clearLoadedResults();
+      saveStatus.value = "";
       readingFileProgress.value = 1;
       readingFileStatus.value = "Starting file reading...";
       hasError.value = false;
 
-      const uploadCounties = {};
-      const uploadStates = {};
-      let completeChecklistCount = 0;
+      const accumulator = createEbdImportAccumulator(taxonomy_sci, taxonomy_code);
+      const files = uploadedFiles.value;
 
-      Papa.parse(uploadedFile.value, {
-        header: true,
-        delimiter: "\t",
-        skipEmptyLines: true,
-        worker: true,
-        chunkSize: 4 * 1024 * 1024,
-
-        chunk: function (results) {
-          const progress = (results.meta.cursor / uploadedFile.value.size) * 100;
-          readingFileProgress.value = progress;
-          readingFileStatus.value = `Reading file (${completeChecklistCount.toLocaleString()} complete checklists found)`;
-
-          const validRows = [];
-
-          for (const row of results.data) {
-            if (row["OBSERVATION COUNT"] === "0") continue;
-            const isComplete = row["ALL SPECIES REPORTED"] === "1";
-            row["ALL SPECIES REPORTED"] = isComplete;
-            validRows.push(row);
-            if (isComplete) {
-              completeChecklistCount++;
-            }
-
-            const countyCode = row["COUNTY CODE"];
-            const stateCode = row["STATE CODE"];
-
-            if (!uploadCounties[countyCode]) {
-              uploadCounties[countyCode] = {
-                name: row["COUNTY"],
-                code: countyCode,
-              };
-            }
-            if (!uploadStates[stateCode]) {
-              uploadStates[stateCode] = {
-                name: row["STATE"],
-                code: stateCode,
-              };
-            }
-          }
-
-          if (validRows.length > 0) {
-            rawData.value.push(...validRows);
-          }
-        },
-
-        complete: function () {
-          readingFileProgress.value = 100;
-          readingFileStatus.value = "Finalizing data...";
-
-          availableCounties.value = Object.values(uploadCounties);
-          availableStates.value = Object.values(uploadStates);
-
-          let minYear = Infinity;
-          let maxYear = -Infinity;
-          for (const row of rawData.value) {
-            const year = new Date(row["OBSERVATION DATE"]).getFullYear();
-            if (year < minYear) minYear = year;
-            if (year > maxYear) maxYear = year;
-          }
-          availableYears.value = {
-            min: minYear,
-            max: maxYear,
+      try {
+        for (const [index, file] of files.entries()) {
+          const updateProgress = (fileProgress) => {
+            readingFileProgress.value = ((index + fileProgress) / files.length) * 100;
+            readingFileStatus.value =
+              `Reading file ${index + 1} of ${files.length} ` +
+              `(${accumulator.recordCount.toLocaleString()} records retained)`;
           };
 
-          filters.minYear = availableYears.value.min;
-          filters.maxYear = availableYears.value.max;
+          if (file.name.toLowerCase().endsWith(".txt")) {
+            await parseTextFile(file, accumulator, updateProgress);
+            continue;
+          }
 
-          readingFileStatus.value = `Loaded ${rawData.value.length.toLocaleString()} records.`;
-          readingFileProgress.value = 0;
-        },
+          readingFileStatus.value = `Opening ZIP ${index + 1} of ${files.length}...`;
+          const zip = await JSZip.loadAsync(file);
+          const largestTxtFile = Object.values(zip.files).reduce((largest, entry) => {
+            if (!entry.name.toLowerCase().endsWith(".txt") || !entry._data) return largest;
+            return !largest || entry._data.uncompressedSize > largest._data.uncompressedSize
+              ? entry
+              : largest;
+          }, null);
+          if (!largestTxtFile) throw new Error(`No .txt file found in ${file.name}.`);
 
-        error: function (error) {
-          console.error("File reading error:", error);
-          readingFileProgress.value = 0;
-          readingFileStatus.value = error?.message || "Error occurred while reading the file";
-          hasError.value = true;
-          checklists.value = null;
-        },
-      });
+          await streamEbdZipEntry(largestTxtFile, accumulator, (progress) => {
+            updateProgress(progress / 100);
+          });
+        }
+
+        readingFileProgress.value = 100;
+        readingFileStatus.value = "Finalizing data...";
+        finalizeImport(accumulator);
+      } catch (error) {
+        console.error("File reading error:", error);
+        readingFileProgress.value = 0;
+        readingFileStatus.value = error?.message || "Error occurred while reading the files";
+        hasError.value = true;
+        checklists.value = null;
+        uploadedFiles.value = [];
+        if (fileInput.value) fileInput.value.value = "";
+      }
     };
 
     const processChecklists = () => {
-      if (rawData.value.length === 0) return;
+      if (loadedChecklists.value.length === 0) return;
 
       isProcessing.value = true;
       saveStatus.value = "Filtering checklists...";
@@ -415,10 +380,10 @@ export default {
       speciesList.value = [];
 
       setTimeout(() => {
-        const uploadChecklists = {};
+        const filteredChecklists = [];
 
-        for (const row of rawData.value) {
-          const rowDate = new Date(row["OBSERVATION DATE"]);
+        for (const checklist of loadedChecklists.value) {
+          const rowDate = new Date(checklist.date);
           const rowYear = rowDate.getFullYear();
           const rowMonth = rowDate.getMonth() + 1;
 
@@ -433,81 +398,15 @@ export default {
             }
           }
 
-          if (filters.state.length > 0 && !filters.state.includes(row["STATE CODE"])) continue;
-          if (filters.county.length > 0 && !filters.county.includes(row["COUNTY CODE"])) continue;
-
-          const sciName = row["SCIENTIFIC NAME"];
-          const match = taxonomy_sci[sciName];
-          const speciesID = match?.reportAs || match?.REPORT_AS || match?.speciesCode || sciName;
-          const match2 = taxonomy_code[speciesID] || { comName: row["COMMON NAME"] };
-          const speciesCode = match2.speciesCode;
-
-          if (match2.category !== "species") {
+          if (filters.state.length > 0 && !filters.state.includes(checklist.location.state_code))
             continue;
-          }
+          if (filters.county.length > 0 && !filters.county.includes(checklist.location.county_code))
+            continue;
 
-          const checklistId = row["SAMPLING EVENT IDENTIFIER"];
-          const groupId = row["GROUP IDENTIFIER"] || checklistId;
-          if (!uploadChecklists[groupId]) {
-            uploadChecklists[groupId] = {
-              checklist_id: checklistId,
-              group_id: groupId,
-              date: row["OBSERVATION DATE"],
-              time: row["TIME OBSERVATIONS STARTED"],
-              location: {
-                latitude: Number(row["LATITUDE"]),
-                longitude: Number(row["LONGITUDE"]),
-                locality: row["LOCALITY"],
-                locality_id: row["LOCALITY ID"],
-                locality_hotspot: row["LOCALITY TYPE"] == "H",
-                country: row["COUNTRY"],
-                country_code: row["COUNTRY CODE"],
-                state: row["STATE"],
-                state_code: row["STATE CODE"],
-                county: row["COUNTY"],
-                county_code: row["COUNTY CODE"],
-              },
-              protocol: row["PROTOCOL NAME"],
-              duration_minutes: Number(row["DURATION MINUTES"]),
-              effort_distance_km: Number(row["EFFORT DISTANCE KM"]),
-              all_species_reported: row["ALL SPECIES REPORTED"],
-              species: [],
-            };
-          } else {
-            uploadChecklists[groupId].all_species_reported =
-              uploadChecklists[groupId].all_species_reported === true &&
-              row["ALL SPECIES REPORTED"] === true;
-          }
-
-          const checklist = uploadChecklists[groupId];
-          const existing = checklist.species.find((entry) => entry.code === speciesCode);
-          if (existing) {
-            const incomingCount = row["OBSERVATION COUNT"];
-            const existingNum = Number(existing.count);
-            const incomingNum = Number(incomingCount);
-            if (Number.isFinite(existingNum) && Number.isFinite(incomingNum)) {
-              if (incomingNum > existingNum) {
-                existing.count = incomingCount;
-              }
-            } else if (!existing.count && incomingCount) {
-              existing.count = incomingCount;
-            }
-            const incomingComment = row["SPECIES COMMENTS"] || "";
-            if (incomingComment && incomingComment !== existing.species_comment) {
-              existing.species_comment = existing.species_comment
-                ? `${existing.species_comment}; ${incomingComment}`
-                : incomingComment;
-            }
-          } else {
-            checklist.species.push({
-              code: speciesCode,
-              count: row["OBSERVATION COUNT"],
-              species_comment: row["SPECIES COMMENTS"] || "",
-            });
-          }
+          filteredChecklists.push(checklist);
         }
 
-        checklists.value = Object.values(uploadChecklists);
+        checklists.value = filteredChecklists;
         saveStatus.value = "Filtering locations...";
         processLocations();
       }, 100);
@@ -553,10 +452,9 @@ export default {
           location.checklist_count = location.checklist_count_complete;
 
           if (isComplete) {
-            const uniqueCodes = new Set(
-              (checklist.species || []).map((entry) => entry.code).filter(Boolean),
-            );
-            for (const code of uniqueCodes) {
+            for (const entry of checklist.species || []) {
+              const code = entry.code;
+              if (!code) continue;
               location.speciesChecklistCounts.set(
                 code,
                 (location.speciesChecklistCounts.get(code) || 0) + 1,
@@ -641,7 +539,7 @@ export default {
         region.code = countryCode;
       }
 
-      emit("processed", {
+      const payload = {
         speciesList: speciesList.value.map((species) => ({ ...species })),
         locations: locations.value.map((location) => ({
           locality_id: location.locality_id,
@@ -660,33 +558,29 @@ export default {
           checklist_count_complete: location.checklist_count_complete,
           checklist_count_incomplete: location.checklist_count_incomplete,
           species_checklist_counts: Array.from(location.speciesChecklistCounts.entries()),
-          checklist: location.checklist.map((entry) => ({
-            ...entry,
-            species: Array.isArray(entry.species)
-              ? entry.species.map((species) => ({ ...species }))
-              : [],
-          })),
+          checklist: location.checklist,
         })),
         region,
         filters: buildSerializableFilters(),
-      });
+      };
       resetLoadedData();
+      emit("processed", payload);
       readingFileStatus.value = "Trip created. Import data cleared from memory.";
       saveStatus.value = "";
       isProcessing.value = false;
     };
 
     return {
-      uploadedFile,
+      uploadedFiles,
       fileInput,
       readingFileProgress,
       readingFileStatus,
       hasError,
       checklists,
-      rawData,
+      loadedRecordCount,
       isProcessing,
       handleFileUpload,
-      readFile,
+      readFiles,
       processChecklists,
       availableStates,
       availableCounties,

@@ -19,7 +19,9 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "download-taxo": "node scripts/download_taxonomy.js"
+    "download-taxo": "node scripts/download_taxonomy.js",
+    "perf:standard": "node tests/perf/standard-flow.mjs",
+    "perf:large-import": "node tests/perf/large-import.mjs"
   },
   "dependencies": {
     "@mapbox/mapbox-gl-geocoder": "^5.1.2",
@@ -39,6 +41,7 @@
   "devDependencies": {
     "@vitejs/plugin-vue": "^6.0.5",
     "globals": "^17.4.0",
+    "playwright": "^1.59.1",
     "vite": "^7.3.2",
     "vite-plugin-pwa": "^1.2.0"
   }

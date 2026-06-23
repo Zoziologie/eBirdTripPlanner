@@ -4,7 +4,7 @@ Plan birding trips from the eBird Basic Dataset (EBD) with an offline-friendly, 
 
 ## Main Flow
 
-1. Download the eBird Basic Dataset (EBD) and upload a `.zip`/`.txt` in **Create Trip**.
+1. Download one or more eBird Basic Dataset (EBD) files and upload the `.zip`/`.txt` files together in **Create Trip**.
 2. Filter checklists by region/date, then process and normalize species + locations locally.
 3. Persist the trip in IndexedDB for fast reloads and offline use.
 4. **Build Trip**: plan visits on a map, adjust radius, and track per‑visit stats.
