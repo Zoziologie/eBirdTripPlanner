@@ -662,8 +662,8 @@ export default {
 
       // Checklists are split out of the location records: they are the bulk of a
       // trip but are only read by the species-map popup and the KML export, so
-      // they live in their own table and load on demand. Durations stay behind
-      // because the visit summary needs a median across every location in range,
+      // they live in their own table and load on demand. Effort values stay behind
+      // because the visit summary needs medians across every location in range,
       // which cannot be recovered from per-location medians.
       const preparedLocations = locations.value;
       const checklistsByLocation = [];
@@ -673,11 +673,15 @@ export default {
 
         const entries = Array.isArray(location.checklist) ? location.checklist : [];
         const durations = [];
+        const distances = [];
         for (const entry of entries) {
           const minutes = Number(entry?.duration_minutes);
           if (Number.isFinite(minutes) && minutes > 0) durations.push(minutes);
+          const kilometers = Number(entry?.effort_distance_km);
+          if (Number.isFinite(kilometers) && kilometers > 0) distances.push(kilometers);
         }
         location.checklist_durations = durations;
+        location.checklist_distances_km = distances;
         checklistsByLocation.push({ localityId: location.locality_id, checklist: entries });
         delete location.checklist;
       }

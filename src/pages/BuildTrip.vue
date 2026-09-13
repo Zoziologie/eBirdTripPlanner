@@ -20,6 +20,13 @@ import { MapStyleControl } from "../utils/mapStyleControl";
 const tripData = shallowRef(null);
 const locations = shallowRef([]);
 const visits = shallowRef([]);
+const selectedVisitIds = ref([]);
+const multipleSelectionMode = ref(false);
+const selectionAnchorId = ref("");
+const bulkShiftAmount = ref(3);
+const bulkShiftUnit = ref("days");
+const isApplyingBulkShift = ref(false);
+const bulkShiftStatus = ref("");
 
 const visitForm = ref({
   name: "",
@@ -132,6 +139,74 @@ const selectedVisit = computed(
 );
 
 const sortedVisits = computed(() => getSortedVisits());
+const selectedVisits = computed(() => {
+  const ids = new Set(selectedVisitIds.value);
+  return sortedVisits.value.filter((visit) => ids.has(String(visit.id)));
+});
+const selectedVisitCount = computed(() => selectedVisitIds.value.length);
+const isBulkSelection = computed(() => selectedVisitCount.value > 1);
+const hasItineraryDetails = computed(() => isBulkSelection.value || !!selectedVisit.value);
+
+const isVisitSelected = (visitId) => selectedVisitIds.value.includes(String(visitId));
+
+const setSelectedVisitIds = (visitIds) => {
+  selectedVisitIds.value = [...new Set(visitIds.map(String))];
+};
+
+const finishMultipleSelection = () => {
+  multipleSelectionMode.value = false;
+  bulkShiftStatus.value = "";
+  const primaryId = isVisitSelected(selectedVisitId.value)
+    ? String(selectedVisitId.value)
+    : selectedVisitIds.value[0] || "";
+  selectedVisitId.value = primaryId;
+  setSelectedVisitIds(primaryId ? [primaryId] : []);
+};
+
+const handleVisitSelection = (visitId, event = {}) => {
+  const id = String(visitId);
+  const usesModifier = event.metaKey || event.ctrlKey;
+  const usesRange = event.shiftKey;
+
+  if (!usesModifier && !usesRange) {
+    multipleSelectionMode.value = false;
+    selectionAnchorId.value = id;
+    selectedVisitId.value = visitId;
+    setSelectedVisitIds([id]);
+    return;
+  }
+
+  if (!multipleSelectionMode.value) {
+    multipleSelectionMode.value = true;
+    setSelectedVisitIds(selectedVisitId.value ? [selectedVisitId.value] : []);
+  }
+
+  if (usesRange) {
+    const orderedIds = sortedVisits.value.map((visit) => String(visit.id));
+    const anchorId = selectionAnchorId.value || String(selectedVisitId.value || id);
+    const anchorIndex = orderedIds.indexOf(anchorId);
+    const visitIndex = orderedIds.indexOf(id);
+    const start = Math.min(anchorIndex < 0 ? visitIndex : anchorIndex, visitIndex);
+    const end = Math.max(anchorIndex < 0 ? visitIndex : anchorIndex, visitIndex);
+    const rangeIds = orderedIds.slice(start, end + 1);
+    setSelectedVisitIds(usesModifier ? [...selectedVisitIds.value, ...rangeIds] : rangeIds);
+  } else {
+    const nextIds = isVisitSelected(id)
+      ? selectedVisitIds.value.filter((selectedId) => selectedId !== id)
+      : [...selectedVisitIds.value, id];
+    setSelectedVisitIds(nextIds);
+    selectionAnchorId.value = id;
+  }
+
+  multipleSelectionMode.value = selectedVisitIds.value.length > 1;
+
+  if (isVisitSelected(id)) {
+    selectedVisitId.value = visitId;
+  } else if (!isVisitSelected(selectedVisitId.value)) {
+    selectedVisitId.value = selectedVisitIds.value.at(-1) || "";
+  }
+  bulkShiftStatus.value = "";
+};
 
 const visitTypeOptions = [
   { value: "birding", label: "Birding", icon: "bi-feather" },
@@ -246,63 +321,90 @@ const makeRadiusFilter = (centerLon, centerLat, radiusKm) => {
   };
 };
 
-const selectedVisitStats = computed(() => {
-  const visit = selectedVisit.value;
-  if (!visit || getVisitType(visit) !== "birding") {
-    return { species: 0, checklists: 0, locations: 0, medianDurationLabel: "" };
-  }
-  const isWithin = makeRadiusFilter(
-    toNumber(visit.longitude, NaN),
-    toNumber(visit.latitude, NaN),
-    Number(visit.radiusKm) || 0,
-  );
+const summarizeVisitAreas = (areaVisits, useMeanDuration = false) => {
+  const radiusFilters = areaVisits
+    .filter((visit) => getVisitType(visit) === "birding")
+    .map((visit) =>
+      makeRadiusFilter(
+        toNumber(visit.longitude, NaN),
+        toNumber(visit.latitude, NaN),
+        Number(visit.radiusKm) || 0,
+      ),
+    )
+    .filter(Boolean);
   const speciesSet = new Set();
   const durations = [];
+  const distances = [];
   let checklistTotal = 0;
   let locationCount = 0;
 
-  if (isWithin) {
-    locations.value.forEach((location) => {
-      if (!isWithin(Number(location.longitude), Number(location.latitude))) return;
-      locationCount += 1;
-      checklistTotal += location.checklist_count || 0;
-      // Current trips keep just the durations on the location; older ones still have
-      // the full checklist records inline.
-      if (Array.isArray(location.checklist_durations)) {
-        for (const minutes of location.checklist_durations) {
-          if (Number.isFinite(minutes) && minutes > 0) durations.push(minutes);
-        }
-      } else if (Array.isArray(location.checklist)) {
-        for (const checklist of location.checklist) {
-          const minutes = Number(checklist?.duration_minutes);
-          if (Number.isFinite(minutes) && minutes > 0) durations.push(minutes);
-        }
+  locations.value.forEach((location) => {
+    const lon = Number(location.longitude);
+    const lat = Number(location.latitude);
+    if (!radiusFilters.some((isWithin) => isWithin(lon, lat))) return;
+    locationCount += 1;
+    checklistTotal += location.checklist_count || 0;
+    // Current trips keep just the durations on the location; older ones still have
+    // the full checklist records inline.
+    if (Array.isArray(location.checklist_durations)) {
+      for (const minutes of location.checklist_durations) {
+        if (Number.isFinite(minutes) && minutes > 0) durations.push(minutes);
       }
-      const entries = location.species_checklist_counts || [];
-      for (const [code] of entries) {
-        speciesSet.add(code);
+      for (const kilometers of location.checklist_distances_km || []) {
+        if (Number.isFinite(kilometers) && kilometers > 0) distances.push(kilometers);
       }
-    });
-  }
+    } else if (Array.isArray(location.checklist)) {
+      for (const checklist of location.checklist) {
+        const minutes = Number(checklist?.duration_minutes);
+        if (Number.isFinite(minutes) && minutes > 0) durations.push(minutes);
+        const kilometers = Number(checklist?.effort_distance_km);
+        if (Number.isFinite(kilometers) && kilometers > 0) distances.push(kilometers);
+      }
+    }
+    const entries = location.species_checklist_counts || [];
+    for (const [code] of entries) speciesSet.add(code);
+  });
 
   const sortedDurations = durations.slice().sort((a, b) => a - b);
-  let medianDurationLabel = "";
+  let durationLabel = "";
   if (sortedDurations.length) {
     const middle = Math.floor(sortedDurations.length / 2);
-    const medianMinutes =
-      sortedDurations.length % 2 === 0
+    const durationMinutes = useMeanDuration
+      ? Math.round(sortedDurations.reduce((sum, minutes) => sum + minutes, 0) / sortedDurations.length)
+      : sortedDurations.length % 2 === 0
         ? Math.round((sortedDurations[middle - 1] + sortedDurations[middle]) / 2)
         : sortedDurations[middle];
-    medianDurationLabel = formatMinutesCompact(medianMinutes);
+    durationLabel = formatMinutesCompact(durationMinutes);
+  }
+
+  const sortedDistances = distances.slice().sort((a, b) => a - b);
+  let distanceLabel = "";
+  if (sortedDistances.length) {
+    const middle = Math.floor(sortedDistances.length / 2);
+    const distanceKm = sortedDistances.length % 2 === 0
+      ? (sortedDistances[middle - 1] + sortedDistances[middle]) / 2
+      : sortedDistances[middle];
+    distanceLabel = `${distanceKm.toLocaleString(undefined, { maximumFractionDigits: 1 })} km`;
   }
 
   return {
     species: speciesSet.size,
     checklists: checklistTotal,
     locations: locationCount,
-    medianDurationLabel,
+    durationLabel,
+    distanceLabel,
   };
+};
+
+const selectedVisitStats = computed(() => {
+  const stats = summarizeVisitAreas(selectedVisit.value ? [selectedVisit.value] : []);
+  return { ...stats, medianDurationLabel: stats.durationLabel };
 });
+
+const selectedVisitAreaStats = computed(() => summarizeVisitAreas(selectedVisits.value, true));
+const selectedBirdingVisitCount = computed(
+  () => selectedVisits.value.filter((visit) => getVisitType(visit) === "birding").length,
+);
 
 // Every note written inside the visit radius. Reuses the same radius filter the
 // visit summary uses, then narrows the comment corpus to those localities.
@@ -320,13 +422,24 @@ const flashCommentFeedback = (state) => {
 };
 
 const exportVisitComments = async (mode) => {
-  const visit = selectedVisit.value;
-  if (!visit) return;
-  const centerLon = toNumber(visit.longitude, NaN);
-  const centerLat = toNumber(visit.latitude, NaN);
-  const radiusKm = Number(visit.radiusKm) || 0;
-  const isWithin = makeRadiusFilter(centerLon, centerLat, radiusKm);
-  if (!isWithin) {
+  const areaVisits = (isBulkSelection.value ? selectedVisits.value : [selectedVisit.value]).filter(
+    (visit) => visit && getVisitType(visit) === "birding",
+  );
+  const areas = areaVisits
+    .map((visit) => {
+      const centerLon = toNumber(visit.longitude, NaN);
+      const centerLat = toNumber(visit.latitude, NaN);
+      const radiusKm = Number(visit.radiusKm) || 0;
+      return {
+        visit,
+        centerLon,
+        centerLat,
+        radiusKm,
+        isWithin: makeRadiusFilter(centerLon, centerLat, radiusKm),
+      };
+    })
+    .filter((area) => area.isWithin);
+  if (!areas.length) {
     flashCommentFeedback("copy-failed");
     return;
   }
@@ -335,7 +448,9 @@ const exportVisitComments = async (mode) => {
   try {
     const locationsById = new Map();
     for (const location of locations.value) {
-      if (!isWithin(Number(location.longitude), Number(location.latitude))) continue;
+      const lon = Number(location.longitude);
+      const lat = Number(location.latitude);
+      if (!areas.some((area) => area.isWithin(lon, lat))) continue;
       locationsById.set(String(location.locality_id), location);
     }
     const entries = (await readTripComments(selectedTripId.value)).filter((entry) =>
@@ -347,15 +462,27 @@ const exportVisitComments = async (mode) => {
         species.commonName || species.code,
       ]),
     );
-    const visitName = visit.name || getVisitName([centerLon, centerLat], radiusKm) || "Visit";
+    const isCombined = isBulkSelection.value;
+    const firstArea = areas[0];
+    const visitName = isCombined
+      ? `${areas.length} selected birding ${areas.length === 1 ? "visit" : "visits"}`
+      : firstArea.visit.name ||
+        getVisitName([firstArea.centerLon, firstArea.centerLat], firstArea.radiusKm) ||
+        "Visit";
+    const contextLines = isCombined
+      ? [
+          `Combined area from ${areas.length} selected birding ${areas.length === 1 ? "visit" : "visits"}`,
+          "",
+        ]
+      : [
+          firstArea.visit.dateTime ? `Date: ${formatVisitDate(firstArea.visit.dateTime)}` : "",
+          `Area: ${Math.round(firstArea.radiusKm * 10) / 10} km around ${firstArea.centerLat.toFixed(4)}, ${firstArea.centerLon.toFixed(4)}`,
+          firstArea.visit.note ? `Visit note: ${firstArea.visit.note}` : "",
+          "",
+        ];
     const markdown = buildCommentMarkdown({
       heading: `${visitName} - observer comments`,
-      contextLines: [
-        visit.dateTime ? `Date: ${formatVisitDate(visit.dateTime)}` : "",
-        `Area: ${Math.round(radiusKm * 10) / 10} km around ${centerLat.toFixed(4)}, ${centerLon.toFixed(4)}`,
-        visit.note ? `Visit note: ${visit.note}` : "",
-        "",
-      ],
+      contextLines,
       entries,
       locationsById,
       speciesNameByCode,
@@ -540,6 +667,83 @@ const formatDateTimeLocal = (date) => {
     `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` +
     `T${pad(date.getHours())}:${pad(date.getMinutes())}`
   );
+};
+
+const shiftDateTime = (value, amount, unit) => {
+  const date = new Date(value);
+  if (unit === "hours") date.setHours(date.getHours() + amount);
+  if (unit === "days") date.setDate(date.getDate() + amount);
+  if (unit === "weeks") date.setDate(date.getDate() + amount * 7);
+  return formatDateTimeLocal(date);
+};
+
+const applyBulkDateShift = async (amount = bulkShiftAmount.value, unit = bulkShiftUnit.value) => {
+  const numericAmount = Number(amount);
+  const datedVisits = selectedVisits.value.filter(
+    (visit) => visit.dateTime && !Number.isNaN(new Date(visit.dateTime).getTime()),
+  );
+  if (!numericAmount || !datedVisits.length) return;
+
+  isApplyingBulkShift.value = true;
+  bulkShiftStatus.value = "";
+  try {
+    const updatedAt = Date.now();
+    const shiftedDates = new Map(
+      datedVisits.map((visit) => [
+        String(visit.id),
+        shiftDateTime(visit.dateTime, numericAmount, unit),
+      ]),
+    );
+    const oldOrder = sortedVisits.value.map((visit) => String(visit.id));
+    const nextVisits = visits.value.map((visit) => {
+      const dateTime = shiftedDates.get(String(visit.id));
+      return dateTime ? { ...visit, dateTime, updatedAt } : visit;
+    });
+    const nextOrder = [...nextVisits]
+      .sort((a, b) => new Date(a.dateTime || 0) - new Date(b.dateTime || 0))
+      .map((visit) => String(visit.id));
+    const oldPredecessor = new Map(oldOrder.map((id, index) => [id, oldOrder[index - 1] || ""]));
+    const invalidRouteIds = nextOrder.filter(
+      (id, index) => oldPredecessor.get(id) !== (nextOrder[index - 1] || ""),
+    );
+    const patches = new Map();
+    const visitIdsByString = new Map(visits.value.map((visit) => [String(visit.id), visit.id]));
+
+    shiftedDates.forEach((dateTime, id) => {
+      patches.set(id, { dateTime, updatedAt });
+    });
+    invalidRouteIds.forEach((id) => {
+      patches.set(id, {
+        ...(patches.get(id) || {}),
+        routeGeometry: null,
+        routeDistanceM: 0,
+        routeDurationS: 0,
+        updatedAt,
+      });
+    });
+
+    await db.transaction("rw", db.visits, async () => {
+      await Promise.all(
+        [...patches].map(([id, updates]) => db.visits.update(visitIdsByString.get(id), updates)),
+      );
+    });
+    visits.value = visits.value.map((visit) => ({
+      ...visit,
+      ...(patches.get(String(visit.id)) || {}),
+    }));
+
+    if (invalidRouteIds.length) {
+      const nextSegments = { ...routeSegments.value };
+      invalidRouteIds.forEach((id) => delete nextSegments[id]);
+      routeSegments.value = nextSegments;
+      refreshRouteSource();
+    }
+    syncVisitForm();
+    const skipped = selectedVisitCount.value - datedVisits.length;
+    bulkShiftStatus.value = `${datedVisits.length} ${datedVisits.length === 1 ? "visit" : "visits"} shifted${skipped ? ` · ${skipped} without a date skipped` : ""}.`;
+  } finally {
+    isApplyingBulkShift.value = false;
+  }
 };
 
 const getNextVisitDateTime = () => {
@@ -743,7 +947,7 @@ const handleVisitsClick = (event) => {
   const feature = event.features[0];
   const visitId = feature.properties.id;
   skipNextFocus.value = true;
-  selectedVisitId.value = visitId;
+  handleVisitSelection(visitId, event.originalEvent || {});
   const visit = visits.value.find((item) => String(item.id) === String(visitId));
   if (visit && getVisitType(visit) !== "birding") {
     if (!visitPopup) {
@@ -1191,7 +1395,7 @@ const updateRadiusHandlePositions = (center, radiusKm, skipIndex = null) => {
 const updateVisitMarkers = () => {
   if (!map || !mapLoaded) return;
   const visit = selectedVisit.value;
-  if (!visit) {
+  if (!visit || isBulkSelection.value) {
     clearVisitMarkers();
     return;
   }
@@ -1337,6 +1541,12 @@ const applyLoadedVisits = (nextVisits) => {
   } else {
     selectedVisitId.value = "";
   }
+  const availableIds = new Set(visits.value.map((visit) => String(visit.id)));
+  if (multipleSelectionMode.value) {
+    setSelectedVisitIds(selectedVisitIds.value.filter((id) => availableIds.has(id)));
+  } else {
+    setSelectedVisitIds(selectedVisitId.value ? [selectedVisitId.value] : []);
+  }
   routeSegments.value = visits.value.reduce((segments, visit) => {
     if (visit.routeGeometry) {
       segments[visit.id] = {
@@ -1468,7 +1678,7 @@ const updateSplitFromPointer = (clientY) => {
 };
 
 const startSplitDrag = (event) => {
-  if (!selectedVisit.value) return;
+  if (!hasItineraryDetails.value) return;
   event.preventDefault();
   isDraggingSplit.value = true;
   updateSplitFromPointer(event.clientY);
@@ -1486,7 +1696,7 @@ const startSplitDrag = (event) => {
 };
 
 const itinerarySplitStyle = computed(() => {
-  if (!selectedVisit.value) return {};
+  if (!hasItineraryDetails.value) return {};
   return { "--itinerary-split": `${itinerarySplitPercent.value}%` };
 });
 
@@ -1764,39 +1974,52 @@ const handleNameInput = async () => {
 };
 
 const deleteVisit = async () => {
-  const visit = selectedVisit.value;
-  if (!visit) return;
+  const visitsToDelete = isBulkSelection.value ? selectedVisits.value : [selectedVisit.value].filter(Boolean);
+  if (!visitsToDelete.length) return;
   const sorted = getSortedVisits();
-  const currentIndex = sorted.findIndex((item) => String(item.id) === String(visit.id));
-  const nextVisitId = currentIndex >= 0 ? sorted[currentIndex + 1]?.id || "" : "";
-  const fallbackVisitId =
-    currentIndex >= 0 ? sorted[currentIndex + 1]?.id || sorted[currentIndex - 1]?.id : "";
-  const confirmed = window.confirm(`Delete ${visit.name || "this visit"}? This cannot be undone.`);
+  const visitIds = new Set(visitsToDelete.map((visit) => String(visit.id)));
+  const firstIndex = sorted.findIndex((visit) => visitIds.has(String(visit.id)));
+  const fallbackVisitId = [
+    ...sorted.slice(Math.max(0, firstIndex)),
+    ...sorted.slice(0, Math.max(0, firstIndex)).reverse(),
+  ].find((visit) => !visitIds.has(String(visit.id)))?.id;
+  const confirmed = window.confirm(
+    visitsToDelete.length === 1
+      ? `Delete ${visitsToDelete[0].name || "this visit"}? This cannot be undone.`
+      : `Delete ${visitsToDelete.length} visits? This cannot be undone.`,
+  );
   if (!confirmed) return;
-  const currentVisit = await db.visits.get(visit.id);
-  if (!currentVisit) {
-    if (selectedTripId.value) {
-      await loadVisits(selectedTripId.value);
-    }
+
+  const currentVisits = await Promise.all(visitsToDelete.map((visit) => db.visits.get(visit.id)));
+  if (currentVisits.some((visit) => !visit)) {
+    await loadVisits(selectedTripId.value);
     return;
   }
-  const localUpdatedAt = Number(visit.updatedAt ?? 0);
-  const dbUpdatedAt = Number(currentVisit.updatedAt ?? 0);
-  const shouldDelete = await resolveRecordConflict({
-    label: "This visit",
-    localUpdatedAt,
-    currentUpdatedAt: dbUpdatedAt,
-    reload: async () => {
-      await loadVisits(selectedTripId.value);
-    },
-  });
-  if (!shouldDelete) return;
-  await db.visits.delete(visit.id);
-  visits.value = visits.value.filter((item) => String(item.id) !== String(visit.id));
+  for (const [index, currentVisit] of currentVisits.entries()) {
+    const shouldDelete = await resolveRecordConflict({
+      label: "A selected visit",
+      localUpdatedAt: Number(visitsToDelete[index].updatedAt ?? 0),
+      currentUpdatedAt: Number(currentVisit.updatedAt ?? 0),
+      reload: async () => {
+        await loadVisits(selectedTripId.value);
+      },
+    });
+    if (!shouldDelete) return;
+  }
+
+  const affectedRouteIds = sorted.flatMap((visit, index) =>
+    visitIds.has(String(visit.id)) ? [visit.id, sorted[index + 1]?.id].filter(Boolean) : [],
+  );
+  await db.visits.bulkDelete(visitsToDelete.map((visit) => visit.id));
+  visits.value = visits.value.filter((visit) => !visitIds.has(String(visit.id)));
   const remainingSorted = getSortedVisits();
   selectedVisitId.value = fallbackVisitId || remainingSorted[0]?.id || "";
+  setSelectedVisitIds(selectedVisitId.value ? [selectedVisitId.value] : []);
+  multipleSelectionMode.value = false;
+  selectionAnchorId.value = selectedVisitId.value ? String(selectedVisitId.value) : "";
+  bulkShiftStatus.value = "";
   nameNeedsUpdate.value = false;
-  await clearRouteForVisits([visit.id, nextVisitId]);
+  await clearRouteForVisits(affectedRouteIds);
 };
 
 const focusOnVisit = () => {
@@ -1835,7 +2058,7 @@ const resetAddMode = () => {
 };
 
 const startAddVisit = () => {
-  if (!selectedTripId.value) return;
+  if (!selectedTripId.value || isBulkSelection.value) return;
   if (addingVisit.value) {
     resetAddMode();
     return;
@@ -1891,6 +2114,12 @@ const isEditableTarget = (target) => {
 const handleKeydown = (event) => {
   if (isEditableTarget(event.target)) return;
   const key = event.key?.toLowerCase();
+  if (key === "escape" && isBulkSelection.value) {
+    event.preventDefault();
+    finishMultipleSelection();
+    return;
+  }
+  if (event.metaKey || event.ctrlKey || event.altKey) return;
   if (key === "a") {
     event.preventDefault();
     startAddVisit();
@@ -1943,7 +2172,7 @@ const updateVisitSources = () => {
       },
       properties: {
         id: visit.id,
-        selected: String(visit.id) === String(selectedVisitId.value),
+        selected: isVisitSelected(visit.id),
         type: getVisitType(visit),
         icon: getVisitTypeIcon(visit),
       },
@@ -1959,7 +2188,7 @@ const updateVisitSources = () => {
         steps: 64,
         properties: {
           id: visit.id,
-          selected: String(visit.id) === String(selectedVisitId.value),
+          selected: isVisitSelected(visit.id),
         },
       });
     });
@@ -2233,6 +2462,7 @@ const initMap = () => {
   });
 
   map.addControl(new mapboxgl.NavigationControl());
+  map.addControl(new mapboxgl.ScaleControl({ maxWidth: 80, unit: "metric" }), "bottom-left");
   mapStyleControl = new MapStyleControl({
     initialStyle: mapStyle.value,
     onStyleChange: (style) => {
@@ -2269,8 +2499,21 @@ const initMap = () => {
   });
 };
 
-watch(selectedTripId, loadTripData, { immediate: true });
+watch(
+  selectedTripId,
+  (tripId) => {
+    multipleSelectionMode.value = false;
+    selectedVisitIds.value = [];
+    selectionAnchorId.value = "";
+    bulkShiftStatus.value = "";
+    loadTripData(tripId);
+  },
+  { immediate: true },
+);
 watch(selectedVisitId, () => {
+  if (!multipleSelectionMode.value) {
+    setSelectedVisitIds(selectedVisitId.value ? [selectedVisitId.value] : []);
+  }
   syncVisitForm();
   nameNeedsUpdate.value = false;
   updateVisitSources();
@@ -2282,6 +2525,11 @@ watch(selectedVisitId, () => {
   }
   focusOnVisit();
   scrollToSelectedVisit();
+});
+watch(selectedVisitIds, () => {
+  updateVisitSources();
+  clearVisitMarkers();
+  updateVisitMarkers();
 });
 watch(visits, () => {
   updateVisitSources();
@@ -2354,7 +2602,7 @@ onBeforeUnmount(() => {
               <button
                 class="btn btn-outline-primary btn-sm"
                 @click="startAddVisit"
-                :disabled="!selectedTripId"
+                :disabled="!selectedTripId || isBulkSelection"
               >
                 <i :class="addingVisit ? 'bi bi-x-lg' : 'bi bi-plus-lg'"></i>
                 <span class="ms-1 d-none d-md-inline">{{ addingVisit ? "Cancel" : "Add" }}</span>
@@ -2362,7 +2610,8 @@ onBeforeUnmount(() => {
               <button
                 class="btn btn-outline-danger btn-sm"
                 @click="deleteVisit"
-                :disabled="!selectedVisit"
+                :disabled="!selectedVisitCount"
+                :title="isBulkSelection ? 'Delete selected visits' : 'Delete visit'"
               >
                 <i class="bi bi-trash3"></i>
               </button>
@@ -2377,7 +2626,7 @@ onBeforeUnmount(() => {
               <button
                 class="btn btn-sm app-action-btn app-action-btn--teal"
                 @click="importVisits"
-                :disabled="!selectedTripId"
+                :disabled="!selectedTripId || isBulkSelection"
               >
                 <i class="bi bi-upload"></i>
                 <span class="ms-1 d-none d-md-inline">Import</span>
@@ -2401,7 +2650,7 @@ onBeforeUnmount(() => {
             <div
               ref="itineraryListRef"
               class="list-group list-group-flush bg-white build-trip-list"
-              :class="{ 'is-full': !selectedVisit }"
+              :class="{ 'is-full': !hasItineraryDetails }"
             >
               <template v-for="group in groupedVisits" :key="group.dateKey">
                 <div
@@ -2433,8 +2682,9 @@ onBeforeUnmount(() => {
                   type="button"
                   class="list-group-item list-group-item-action"
                   :data-visit-id="visit.id"
-                  :class="{ active: String(visit.id) === String(selectedVisitId) }"
-                  @click="selectedVisitId = visit.id"
+                  :class="{ active: isVisitSelected(visit.id) }"
+                  :aria-pressed="isVisitSelected(visit.id)"
+                  @click="handleVisitSelection(visit.id, $event)"
                 >
                   <div class="d-flex align-items-center justify-content-between gap-2">
                     <div class="d-flex align-items-center gap-2 flex-grow-1 overflow-hidden">
@@ -2478,7 +2728,7 @@ onBeforeUnmount(() => {
               </div>
             </div>
             <div
-              v-if="selectedVisit"
+              v-if="hasItineraryDetails"
               class="build-trip-splitter"
               role="separator"
               aria-label="Resize itinerary panels"
@@ -2487,7 +2737,102 @@ onBeforeUnmount(() => {
               <i class="bi bi-grip-horizontal" aria-hidden="true"></i>
             </div>
             <transition name="slide">
-              <div v-if="selectedVisit" class="build-trip-edit bg-white shadow-sm">
+              <div
+                v-if="isBulkSelection"
+                class="build-trip-edit bulk-visit-edit bg-white shadow-sm"
+              >
+                <div class="mb-3">
+                  <div class="fw-semibold text-dark">
+                    {{ selectedVisitCount }} {{ selectedVisitCount === 1 ? "visit" : "visits" }} selected
+                  </div>
+                  <div class="small text-muted mt-1">
+                    Use Cmd/Ctrl-click to add or remove visits, Shift-click to select a range, or
+                    click without a modifier to return to a single visit.
+                  </div>
+                </div>
+
+                <label class="form-label" for="bulk-shift-amount">Shift date and time</label>
+                <div class="small text-muted mb-2">
+                  Enter a positive or negative amount to shift every dated visit. Day and week
+                  shifts preserve each visit's local clock time.
+                </div>
+                <div class="input-group mb-2">
+                  <input
+                    id="bulk-shift-amount"
+                    v-model.number="bulkShiftAmount"
+                    type="number"
+                    step="1"
+                    class="form-control"
+                    aria-label="Date shift amount"
+                  />
+                  <select v-model="bulkShiftUnit" class="form-select" aria-label="Date shift unit">
+                    <option value="hours">hours</option>
+                    <option value="days">days</option>
+                    <option value="weeks">weeks</option>
+                  </select>
+                  <button
+                    class="btn btn-primary"
+                    type="button"
+                    @click="applyBulkDateShift()"
+                    :disabled="!selectedVisitCount || !Number(bulkShiftAmount) || isApplyingBulkShift"
+                  >
+                    <span v-if="isApplyingBulkShift" class="spinner-border spinner-border-sm"></span>
+                    <span v-else>Apply</span>
+                  </button>
+                </div>
+                <div v-if="bulkShiftStatus" class="small text-success mt-2">
+                  <i class="bi bi-check-circle me-1"></i>{{ bulkShiftStatus }}
+                </div>
+                <template v-if="selectedBirdingVisitCount">
+                  <div class="mt-3">
+                    <label class="form-label">Observer comments</label>
+                    <div class="d-flex gap-2">
+                      <button
+                        class="btn btn-outline-secondary btn-sm flex-fill"
+                        type="button"
+                        @click="exportVisitComments('copy')"
+                        :disabled="isExportingComments"
+                      >
+                        <i
+                          class="bi me-1"
+                          :class="commentExportDone === 'copied' ? 'bi-check-lg' : 'bi-clipboard'"
+                        ></i>
+                        {{
+                          commentExportDone === "copied"
+                            ? "Copied"
+                            : commentExportDone === "copy-failed"
+                              ? "Copy failed"
+                              : "Copy"
+                        }}
+                      </button>
+                      <button
+                        class="btn btn-outline-secondary btn-sm flex-fill"
+                        type="button"
+                        @click="exportVisitComments('download')"
+                        :disabled="isExportingComments"
+                      >
+                        <i
+                          class="bi me-1"
+                          :class="commentExportDone === 'downloaded' ? 'bi-check-lg' : 'bi-filetype-md'"
+                        ></i>
+                        {{ commentExportDone === "downloaded" ? "Downloaded" : "Download" }}
+                      </button>
+                    </div>
+                  </div>
+                  <div class="text-muted small mt-3">
+                    {{ selectedVisitAreaStats.species }} species ·
+                    {{ selectedVisitAreaStats.checklists }} checklists ·
+                    {{ selectedVisitAreaStats.locations }} locations
+                    <template v-if="selectedVisitAreaStats.durationLabel">
+                      · duration: {{ selectedVisitAreaStats.durationLabel }}
+                    </template>
+                    <template v-if="selectedVisitAreaStats.distanceLabel">
+                      · distance: {{ selectedVisitAreaStats.distanceLabel }}
+                    </template>
+                  </div>
+                </template>
+              </div>
+              <div v-else-if="selectedVisit" class="build-trip-edit bg-white shadow-sm">
               <div class="d-flex align-items-center justify-content-between gap-2 mb-2">
                 <div class="fw-semibold small text-dark">Details</div>
               </div>
@@ -2602,19 +2947,8 @@ onBeforeUnmount(() => {
                     @input="saveVisitDetails"
                   ></textarea>
                 </div>
-                <div class="text-muted small" v-if="visitForm.type === 'birding'">
-                  {{ selectedVisitStats.species }} species ·
-                  {{ selectedVisitStats.checklists }} checklists ·
-                  {{ selectedVisitStats.locations }} locations
-                  <template v-if="selectedVisitStats.medianDurationLabel">
-                    · duration: {{ selectedVisitStats.medianDurationLabel }}
-                  </template>
-                </div>
                 <div class="mt-2" v-if="visitForm.type === 'birding'">
                   <label class="form-label">Observer comments</label>
-                  <div class="text-muted small mb-2">
-                    Every note written on checklists in this area.
-                  </div>
                   <div class="d-flex gap-2">
                     <button
                       class="btn btn-outline-secondary btn-sm flex-fill"
@@ -2647,6 +2981,17 @@ onBeforeUnmount(() => {
                       {{ commentExportDone === "downloaded" ? "Downloaded" : "Download" }}
                     </button>
                   </div>
+                </div>
+                <div class="text-muted small mt-3" v-if="visitForm.type === 'birding'">
+                  {{ selectedVisitStats.species }} species ·
+                  {{ selectedVisitStats.checklists }} checklists ·
+                  {{ selectedVisitStats.locations }} locations
+                  <template v-if="selectedVisitStats.medianDurationLabel">
+                    · duration: {{ selectedVisitStats.medianDurationLabel }}
+                  </template>
+                  <template v-if="selectedVisitStats.distanceLabel">
+                    · distance: {{ selectedVisitStats.distanceLabel }}
+                  </template>
                 </div>
               </div>
             </transition>
@@ -2770,6 +3115,10 @@ onBeforeUnmount(() => {
 .list-group-item.active .fw-semibold,
 .list-group-item.active .small {
   color: #ffffff;
+}
+
+.bulk-visit-edit {
+  border-top: 3px solid var(--app-color-gold);
 }
 
 .build-trip {

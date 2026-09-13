@@ -85,7 +85,8 @@ spans thousands of localities.
 
 Two details worth knowing before touching this:
 
-- Checklist **durations** stay on the location (`checklist_durations`), because
+- Checklist **effort values** stay on the location (`checklist_durations` and
+  `checklist_distances_km`), because
   the Build Trip visit summary needs a median across every location in range and
   that cannot be recovered from per-location medians. They cost well under 1 MB.
 - **There are no migrations, on purpose.** Only the current schema is declared in
