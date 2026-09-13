@@ -19,6 +19,12 @@ export default defineConfig({
         globPatterns: [
           "**/*.{js,css,html,ico,png,svg,webmanifest,woff,woff2,jpg,jpeg,gif,webp,avif,json}",
         ],
+        // bootstrap-icons.css appends a bare hex cache-busting param to its font
+        // URLs (e.g. `?e34853135f9e39acf64315236852cd5a`). Workbox precaches the
+        // font without it, so the actual request never matches the cache entry
+        // and the icon font silently fails to load offline. Strip it like the
+        // default utm_/fbclid params.
+        ignoreURLParametersMatching: [/^utm_/, /^fbclid$/, /^[0-9a-f]{16,}$/],
         runtimeCaching: [
           {
             urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
