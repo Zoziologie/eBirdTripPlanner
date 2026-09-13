@@ -1,6 +1,6 @@
 <script setup>
 import { ref, shallowRef, onMounted, onBeforeUnmount, watch, computed } from "vue";
-import { db } from "../data/db";
+import { db, deleteTripChecklists, storeTripChecklists } from "../data/db";
 import Initiate from "../components/Initiate.vue";
 import LifeList from "../components/LifeList.vue";
 import { useTripBundleLoader } from "../composables/useTripBundleLoader";
@@ -150,6 +150,7 @@ const createTripFromProcessed = async (payload) => {
     filters: cloneTripFilters(payload?.filters),
     updatedAt: now,
   });
+  await storeTripChecklists(id, payload?.checklists);
   bumpEbdUpdatedAt();
   await loadTrips();
   selectedTripId.value = id;
@@ -400,6 +401,7 @@ const deleteTrip = async () => {
   await db.trips.delete(tripId);
   await db.ebd.where("tripId").equals(tripId).delete();
   await db.visits.where("tripId").equals(tripId).delete();
+  await deleteTripChecklists(tripId);
   bumpEbdUpdatedAt();
   resetLocalState();
   await loadTrips();
@@ -474,16 +476,20 @@ const collectEbdSpeciesCodes = (locations) => {
   const codes = new Set();
   if (!Array.isArray(locations)) return codes;
 
+  const rawCodes = new Set();
   locations.forEach((location) => {
     const entries = Array.isArray(location?.species_checklist_counts)
       ? location.species_checklist_counts
       : [];
     entries.forEach(([code]) => {
-      if (!code) return;
-      const resolvedTaxon = resolveSpeciesTaxon({ speciesCode: code });
-      const normalizedCode = resolvedTaxon?.speciesCode || code;
-      if (normalizedCode) codes.add(normalizedCode);
+      if (code) rawCodes.add(code);
     });
+  });
+
+  rawCodes.forEach((code) => {
+    const resolvedTaxon = resolveSpeciesTaxon({ speciesCode: code });
+    const normalizedCode = resolvedTaxon?.speciesCode || code;
+    if (normalizedCode) codes.add(normalizedCode);
   });
 
   return codes;
@@ -579,16 +585,21 @@ const syncTripReportSpecies = async () => {
       };
     });
 
+    const existingCodes = new Set(nextList.map((item) => item.code).filter(Boolean));
+    const existingSciNames = new Set(
+      nextList.map((item) => item.scientificName).filter(Boolean),
+    );
     prepared.forEach((species) => {
       if (!species.code && !species.scientificName) return;
-      const exists = nextList.some(
-        (item) =>
-          (species.code && item.code === species.code) ||
-          (species.scientificName && item.scientificName === species.scientificName),
-      );
+      const exists =
+        (species.code && existingCodes.has(species.code)) ||
+        (species.scientificName && existingSciNames.has(species.scientificName));
       if (exists) return;
+      const nextCode = species.code || species.scientificName || "unknown";
+      existingCodes.add(nextCode);
+      if (species.scientificName) existingSciNames.add(species.scientificName);
       nextList.push({
-        code: species.code || species.scientificName || "unknown",
+        code: nextCode,
         commonName: species.commonName || species.code || species.scientificName || "Unknown",
         scientificName: species.scientificName || "",
         taxonOrder: species.taxonOrder ?? Infinity,
@@ -723,13 +734,17 @@ const exportTrip = async () => {
     const ebd = await db.ebd.where("tripId").equals(selectedTripId.value).first();
     const visits = await db.visits.where("tripId").equals(selectedTripId.value).toArray();
     const lists = await db.lists.where("tripId").equals(selectedTripId.value).toArray();
+    // Checklists live in their own table; carry them along so an
+    // export still round-trips into a complete trip.
+    const checklists = await db.checklists.where("tripId").equals(selectedTripId.value).toArray();
     const payload = {
-      version: 1,
+      version: 2,
       exportedAt: new Date().toISOString(),
       trip,
       ebd,
       visits,
       lists,
+      checklists,
     };
     const blob = new Blob([JSON.stringify(payload)], {
       type: "application/json",
@@ -820,7 +835,8 @@ const importTrip = async (event) => {
       event.target.value = "";
       return;
     }
-    await db.transaction("rw", db.trips, db.ebd, db.visits, db.lists, async () => {
+    const tables = [db.trips, db.ebd, db.visits, db.lists, db.checklists];
+    await db.transaction("rw", tables, async () => {
       await db.trips.put(parsed.trip);
 
       if (parsed.ebd) {
@@ -837,6 +853,17 @@ const importTrip = async (event) => {
       await db.lists.where("tripId").equals(tripId).delete();
       if (Array.isArray(parsed.lists) && parsed.lists.length > 0) {
         await db.lists.bulkPut(parsed.lists.map((item) => ({ ...item, tripId })));
+      }
+
+      await db.checklists.where("tripId").equals(tripId).delete();
+      if (Array.isArray(parsed.checklists) && parsed.checklists.length > 0) {
+        await db.checklists.bulkPut(
+          parsed.checklists.map((entry) => ({
+            tripId,
+            localityId: String(entry.localityId),
+            checklist: entry.checklist || [],
+          })),
+        );
       }
     });
     bumpEbdUpdatedAt();

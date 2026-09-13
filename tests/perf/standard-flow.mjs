@@ -180,7 +180,13 @@ const createSyntheticEbd = async () => {
           "0",
           "",
           "",
-          "",
+          // A comment that opens with a double quote: default CSV quoting would
+          // swallow every row that follows it.
+          index === 2 && checklist % 9 === 0
+            ? '"Wheezy" two-note call, recorded.'
+            : index % 5 === 0
+              ? `Seen in the open at location ${location}.`
+              : "",
           "Traveling",
         ].join("\t"),
       );
@@ -271,6 +277,7 @@ try {
     await page.getByText("Total Species (EBD):").waitFor({ state: "visible" });
   });
   assertThreshold(rows, failures, "createTripMs", createTrip.ms);
+
 
   const heapBefore = await getHeapMb(page, cdpSession);
 

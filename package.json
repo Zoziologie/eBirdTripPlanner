@@ -1,7 +1,7 @@
 {
   "name": "ebirdtripplanner",
-  "version": "0.2.2",
-  "author": "Raphaël Nussbaumer",
+  "version": "0.2.3",
+  "author": "Rapha\u00ebl Nussbaumer",
   "license": "GPL-3.0-or-later",
   "repository": {
     "type": "git",
@@ -20,8 +20,11 @@
     "build": "vite build",
     "preview": "vite preview",
     "download-taxo": "node scripts/download_taxonomy.js",
+    "test": "node --test \"tests/unit/*.test.mjs\"",
     "perf:standard": "node tests/perf/standard-flow.mjs",
-    "perf:large-import": "node tests/perf/large-import.mjs"
+    "perf:large-import": "node tests/perf/large-import.mjs",
+    "perf:large-flow": "node tests/perf/large-flow.mjs",
+    "perf:fixture": "node tests/perf/make-ebd-fixture.mjs"
   },
   "dependencies": {
     "@mapbox/mapbox-gl-geocoder": "^5.1.2",

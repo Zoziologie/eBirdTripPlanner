@@ -1,19 +1,21 @@
 <script setup>
-import { ref, computed, onMounted, watch, nextTick } from "vue";
+import { ref, shallowRef, computed, onMounted, watch, nextTick } from "vue";
 import mapboxgl from "mapbox-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
-import * as turf from "@turf/turf";
+import { clustersDbscan } from "@turf/clusters-dbscan";
+import { featureCollection, point } from "@turf/helpers";
 import vSelect from "vue-select";
 import "vue-select/dist/vue-select.css";
+import { readLocationChecklists } from "../data/db";
 import { useTripBundleLoader } from "../composables/useTripBundleLoader";
 import { trips, selectedTripId, refreshTrips } from "../state/tripSelection";
 import { ebdUpdatedAt } from "../state/ebdUpdates";
 
-const tripData = ref(null);
+const tripData = shallowRef(null);
 
-const speciesList = ref([]);
-const locations = ref([]);
-const region = ref({ code: "", name: "" });
+const speciesList = shallowRef([]);
+const locations = shallowRef([]);
+const region = shallowRef({ code: "", name: "" });
 
 const filters = ref({
   dbscanDistance: 1,
@@ -21,8 +23,9 @@ const filters = ref({
 });
 
 const isProcessing = ref(false);
-const clusteredLocations = ref([]);
-const clusterSpeciesCounts = ref(new Map());
+const clusteredLocations = shallowRef([]);
+const clusterSpeciesCounts = shallowRef(new Map());
+const clusterById = shallowRef(new Map());
 
 const selectedSpeciesCode = ref("");
 const isMobilePanelOpen = ref(false);
@@ -64,11 +67,19 @@ const locationCount = computed(() => locations.value.length);
 const checklistCount = computed(() =>
   locations.value.reduce((sum, loc) => sum + getLocationChecklistCount(loc), 0),
 );
-const sizeLegend = computed(() => {
-  const counts = clusteredLocations.value.map((loc) => loc.checklist_count || 0);
-  if (!counts.length) return { min: 0, max: 0 };
-  return { min: Math.min(...counts), max: Math.max(...counts) };
-});
+const minMaxOf = (values) => {
+  if (!values.length) return { min: 0, max: 0 };
+  let min = Infinity;
+  let max = -Infinity;
+  for (const value of values) {
+    if (value < min) min = value;
+    if (value > max) max = value;
+  }
+  return { min, max };
+};
+const sizeLegend = computed(() =>
+  minMaxOf(clusteredLocations.value.map((loc) => loc.checklist_count || 0)),
+);
 const colorLegend = computed(() => {
   if (selectedSpeciesCode.value) {
     return {
@@ -80,39 +91,48 @@ const colorLegend = computed(() => {
   }
   const counts = clusteredLocations.value.map((loc) => loc.species_count || 0);
   if (!counts.length) return { label: "Species richness", min: 0, max: 0, unit: "" };
-  return {
-    label: "Species richness",
-    min: Math.min(...counts),
-    max: Math.max(...counts),
-    unit: "",
-  };
+  const { min, max } = minMaxOf(counts);
+  return { label: "Species richness", min, max, unit: "" };
 });
 
+// Checklists live in their own table from v2 on and are fetched only when a
+// popup or the KML export actually needs them. Trips created before that still
+// carry them inline on the location. Cached per locality for the current trip so
+// hovering the same cluster repeatedly does not re-read the database.
+const checklistCache = new Map();
+
 const getLocationChecklistEntries = (location) => {
-  const entries = Array.isArray(location.checklist) ? location.checklist : [];
-  return entries.filter((entry) => entry.all_species_reported === true);
+  if (Array.isArray(location.checklist)) return location.checklist;
+  return checklistCache.get(String(location.locality_id)) || [];
+};
+
+const loadChecklistsForLocations = async (locationList) => {
+  const missing = [];
+  for (const location of locationList) {
+    if (Array.isArray(location.checklist)) continue;
+    const id = String(location.locality_id);
+    if (!checklistCache.has(id)) missing.push(id);
+  }
+  if (!missing.length) return;
+  const loaded = await readLocationChecklists(selectedTripId.value, missing);
+  for (const id of missing) checklistCache.set(id, loaded.get(id) || []);
 };
 
 const getLocationChecklistCount = (location) => {
-  return getLocationChecklistEntries(location).length;
+  const complete = Number(location.checklist_count_complete ?? location.checklist_count);
+  return Number.isFinite(complete) ? complete : getLocationChecklistEntries(location).length;
 };
 
-const buildSpeciesCountsMap = (entries) => {
-  const counts = new Map();
-  entries.forEach((entry) => {
-    const uniqueCodes = new Set(
-      (entry.species || []).map((species) => species.code).filter(Boolean),
-    );
-    uniqueCodes.forEach((code) => {
-      counts.set(code, (counts.get(code) || 0) + 1);
-    });
-  });
-  return counts;
-};
+// [code, count] pairs aggregated over the location's complete checklists, stored
+// at import time.
+const getLocationSpeciesEntries = (location) =>
+  Array.isArray(location.species_checklist_counts) ? location.species_checklist_counts : [];
 
-const getLocationSpeciesCountsMap = (location) => {
-  const entries = getLocationChecklistEntries(location);
-  return buildSpeciesCountsMap(entries);
+const locationHasSpecies = (location, code) => {
+  for (const entry of getLocationSpeciesEntries(location)) {
+    if (entry[0] === code) return true;
+  }
+  return false;
 };
 
 const escapeHtml = (value) => {
@@ -127,6 +147,7 @@ const escapeHtml = (value) => {
 const buildChecklistRowsForSpecies = (entries, selectedCode) => {
   return (entries || [])
     .map((entry) => {
+      if (entry.all_species_reported === false) return null;
       const match = (entry.species || []).find((species) => species.code === selectedCode);
       if (!match) return null;
       const rawTime = entry.time || "";
@@ -173,13 +194,27 @@ const buildKmlDescription = (location, rows) => {
   `;
 };
 
-const exportKml = () => {
+const isExportingKml = ref(false);
+
+const exportKml = async () => {
   const selectedCode = selectedSpeciesCode.value;
   if (!selectedCode) {
     window.alert("Select a species before exporting KML.");
     return;
   }
-  const placemarks = locations.value
+  // Only the locations that actually recorded this species need their
+  // checklists read, which keeps the export off the full trip payload.
+  const relevant = locations.value.filter((location) =>
+    locationHasSpecies(location, selectedCode),
+  );
+  isExportingKml.value = true;
+  try {
+    await loadChecklistsForLocations(relevant);
+  } finally {
+    isExportingKml.value = false;
+  }
+
+  const placemarks = relevant
     .map((location) => {
       const entries = getLocationChecklistEntries(location);
       const rows = buildChecklistRowsForSpecies(entries, selectedCode);
@@ -239,6 +274,7 @@ const formatChecklistLabel = (count) => {
 const buildSpeciesTable = (entries, selectedCode) => {
   const rows = (entries || [])
     .map((entry) => {
+      if (entry.all_species_reported === false) return null;
       const match = (entry.species || []).find((species) => species.code === selectedCode);
       if (!match) return null;
       const rawTime = entry.time || "";
@@ -279,7 +315,7 @@ const buildSpeciesTable = (entries, selectedCode) => {
   `;
 };
 
-const buildPopupHtml = (location) => {
+const buildPopupHtml = (location, checklistEntries = []) => {
   const hotspot = location.hotspot;
   const lat = Number(location.latitude);
   const lon = Number(location.longitude);
@@ -302,9 +338,7 @@ const buildPopupHtml = (location) => {
         return `${percent}% reporting rate`;
       })()
     : `${location.species_count || 0} species`;
-  const speciesTable = selectedCode
-    ? buildSpeciesTable(location.checklists || [], selectedCode)
-    : "";
+  const speciesTable = selectedCode ? buildSpeciesTable(checklistEntries, selectedCode) : "";
   const locationCountLabel =
     location.location_count && location.location_count > 0
       ? `${location.location_count} location${location.location_count === 1 ? "" : "s"}`
@@ -326,8 +360,30 @@ const buildPopupHtml = (location) => {
   `;
 };
 
-const showClusterPopup = (feature) => {
-  const location = JSON.parse(feature.properties.locationData);
+const getClusterChecklistEntries = (cluster) => {
+  const entries = [];
+  for (const location of cluster?.locations || []) {
+    for (const entry of getLocationChecklistEntries(location)) entries.push(entry);
+  }
+  return entries;
+};
+
+let popupRequestId = 0;
+
+const showClusterPopup = async (feature) => {
+  const cluster = clusterById.value.get(feature.properties.id);
+  if (!cluster) return;
+  const requestId = ++popupRequestId;
+  const coordinates = feature.geometry.coordinates;
+
+  let entries = [];
+  if (selectedSpeciesCode.value) {
+    await loadChecklistsForLocations(cluster.locations || []);
+    // The pointer may have moved to another cluster while we were reading.
+    if (requestId !== popupRequestId) return;
+    entries = getClusterChecklistEntries(cluster);
+  }
+
   if (!popup) {
     popup = new mapboxgl.Popup({
       closeButton: true,
@@ -335,7 +391,7 @@ const showClusterPopup = (feature) => {
       offset: 15,
     });
   }
-  popup.setLngLat(feature.geometry.coordinates).setHTML(buildPopupHtml(location)).addTo(map);
+  popup.setLngLat(coordinates).setHTML(buildPopupHtml(cluster, entries)).addTo(map);
 };
 
 const loadTripData = async (tripId) => {
@@ -347,9 +403,12 @@ const loadTripData = async (tripId) => {
     region.value = { code: "", name: "" };
     clusteredLocations.value = [];
     clusterSpeciesCounts.value = new Map();
+    clusterById.value = new Map();
+    checklistCache.clear();
     selectedSpeciesCode.value = "";
     return;
   }
+  checklistCache.clear();
   const { bundle, isCurrent } = await loadTripBundle(tripId);
   if (!isCurrent) return;
   tripData.value = bundle.ebd;
@@ -365,6 +424,7 @@ const runDbscan = () => {
   if (!locations.value.length) {
     clusteredLocations.value = [];
     clusterSpeciesCounts.value = new Map();
+    clusterById.value = new Map();
     updateMapData();
     fitMapToClusters();
     return;
@@ -381,25 +441,15 @@ const runDbscan = () => {
     console.warn("Skipping locations with invalid coordinates", invalid.slice(0, 5));
   }
 
-  const locationMeta = validLocations.map((location) => {
-    const entries = getLocationChecklistEntries(location);
-    return {
-      location,
-      entries,
-      checklistCount: entries.length,
-      speciesCounts: buildSpeciesCountsMap(entries),
-    };
-  });
-
   const features = validLocations.map((loc) =>
-    turf.point([Number(loc.longitude), Number(loc.latitude)], {
+    point([Number(loc.longitude), Number(loc.latitude)], {
       checklistCount: loc.checklist_count,
       locationId: loc.locality_id,
     }),
   );
 
-  const clustered = turf.clustersDbscan(
-    turf.featureCollection(features),
+  const clustered = clustersDbscan(
+    featureCollection(features),
     filters.value.dbscanDistance,
     {
       units: "kilometers",
@@ -412,9 +462,10 @@ const runDbscan = () => {
 
   clustered.features.forEach((feature, idx) => {
     if (feature.properties.dbscan !== "core") return;
-    const meta = locationMeta[idx];
-    if (!meta || meta.checklistCount < filters.value.minChecklist) return;
-    const location = meta.location;
+    const location = validLocations[idx];
+    if (!location) return;
+    const locationChecklistCount = getLocationChecklistCount(location);
+    if (locationChecklistCount < filters.value.minChecklist) return;
 
     const clusterId = Number.isFinite(feature.properties.cluster)
       ? feature.properties.cluster
@@ -429,7 +480,7 @@ const runDbscan = () => {
         localityCounts: new Map(),
         hotspotBest: null,
         location_count: 0,
-        checklists: [],
+        locations: [],
       });
       speciesMap.set(clusterId, new Map());
     }
@@ -437,30 +488,30 @@ const runDbscan = () => {
     const cluster = clusterMap.get(clusterId);
     cluster.latitude += location.latitude;
     cluster.longitude += location.longitude;
-    cluster.checklist_count += meta.checklistCount;
+    cluster.checklist_count += locationChecklistCount;
     cluster.location_count += 1;
 
     const localityName = location.locality || "Unknown location";
     cluster.localityCounts.set(
       localityName,
-      (cluster.localityCounts.get(localityName) || 0) + meta.checklistCount,
+      (cluster.localityCounts.get(localityName) || 0) + locationChecklistCount,
     );
     if (location.locality_hotspot && location.locality_id) {
       const currentBest = cluster.hotspotBest;
-      if (!currentBest || meta.checklistCount > currentBest.count) {
+      if (!currentBest || locationChecklistCount > currentBest.count) {
         cluster.hotspotBest = {
           id: location.locality_id,
           name: localityName,
-          count: meta.checklistCount,
+          count: locationChecklistCount,
         };
       }
     }
 
     const clusterSpecies = speciesMap.get(clusterId);
-    for (const [code, count] of meta.speciesCounts.entries()) {
+    for (const [code, count] of getLocationSpeciesEntries(location)) {
       clusterSpecies.set(code, (clusterSpecies.get(code) || 0) + count);
     }
-    cluster.checklists.push(...meta.entries);
+    cluster.locations.push(location);
   });
 
   const clusters = Array.from(clusterMap.values()).map((cluster) => {
@@ -485,12 +536,13 @@ const runDbscan = () => {
       hotspot: cluster.hotspotBest,
       checklist_count: cluster.checklist_count,
       species_count: speciesCount,
-      checklists: cluster.checklists,
+      locations: cluster.locations,
     };
   });
 
   clusteredLocations.value = clusters;
   clusterSpeciesCounts.value = speciesMap;
+  clusterById.value = new Map(clusters.map((cluster) => [cluster.cluster_id, cluster]));
   isProcessing.value = false;
   updateMapData();
   fitMapToClusters();
@@ -714,7 +766,6 @@ const updateMapData = () => {
         size_normalized: sizeNormalized,
         color_value: colorValue,
         sort_key: sortKey,
-        locationData: JSON.stringify(location),
       },
     };
   });
@@ -748,16 +799,6 @@ watch(mapStyle, (style) => {
     map.jumpTo({ center: currentCenter, zoom: currentZoom });
   });
 });
-watch(
-  () => clusteredLocations.value,
-  (newVal) => {
-    if (newVal.length > 0 && map && mapLoaded) {
-      updateMapData();
-      fitMapToClusters();
-    }
-  },
-  { deep: true },
-);
 
 onMounted(async () => {
   await refreshTrips();
@@ -904,7 +945,11 @@ onMounted(async () => {
               <div class="text-muted small mb-2">
                 Export KML for the selected species to view checklists in other apps.
               </div>
-              <button class="btn btn-outline-secondary w-100" @click="exportKml">
+              <button
+                class="btn btn-outline-secondary w-100"
+                @click="exportKml"
+                :disabled="isExportingKml"
+              >
                 <i class="bi bi-download me-1"></i>
                 Export KML
               </button>

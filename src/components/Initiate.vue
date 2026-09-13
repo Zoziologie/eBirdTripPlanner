@@ -184,7 +184,9 @@ import {
 } from "../utils/taxonomy";
 import {
   addEbdRow,
+  beginEbdFile,
   createEbdImportAccumulator,
+  EBD_PARSE_OPTIONS,
   finalizeEbdImport,
   streamEbdZipEntry,
 } from "../utils/ebdImport";
@@ -284,10 +286,9 @@ export default {
 
     const parseTextFile = (file, accumulator, onProgress) =>
       new Promise((resolve, reject) => {
+        beginEbdFile(accumulator);
         Papa.parse(file, {
-          header: true,
-          delimiter: "\t",
-          skipEmptyLines: true,
+          ...EBD_PARSE_OPTIONS,
           chunkSize: 1024 * 1024,
           chunk(results) {
             for (const row of results.data) addEbdRow(row, accumulator);
@@ -521,11 +522,14 @@ export default {
       const uniqueStates = new Set();
       const uniqueCountries = new Set();
 
-      checklists.value.forEach((checklist) => {
-        if (!checklist.location) return;
+      // Only "is there exactly one?" matters, so stop as soon as both are
+      // ambiguous rather than walking every checklist.
+      for (const checklist of checklists.value) {
+        if (!checklist.location) continue;
         uniqueStates.add(checklist.location.state_code);
         uniqueCountries.add(checklist.location.country_code);
-      });
+        if (uniqueStates.size > 1 && uniqueCountries.size > 1) break;
+      }
 
       if (uniqueStates.size === 1) {
         const stateCode = Array.from(uniqueStates)[0];
@@ -539,27 +543,32 @@ export default {
         region.code = countryCode;
       }
 
+      // Checklists are split out of the location records: they are the bulk of a
+      // trip but are only read by the species-map popup and the KML export, so
+      // they live in their own table and load on demand. Durations stay behind
+      // because the visit summary needs a median across every location in range,
+      // which cannot be recovered from per-location medians.
+      const preparedLocations = locations.value;
+      const checklistsByLocation = [];
+      for (const location of preparedLocations) {
+        location.species_checklist_counts = Array.from(location.speciesChecklistCounts.entries());
+        delete location.speciesChecklistCounts;
+
+        const entries = Array.isArray(location.checklist) ? location.checklist : [];
+        const durations = [];
+        for (const entry of entries) {
+          const minutes = Number(entry?.duration_minutes);
+          if (Number.isFinite(minutes) && minutes > 0) durations.push(minutes);
+        }
+        location.checklist_durations = durations;
+        checklistsByLocation.push({ localityId: location.locality_id, checklist: entries });
+        delete location.checklist;
+      }
+
       const payload = {
         speciesList: speciesList.value.map((species) => ({ ...species })),
-        locations: locations.value.map((location) => ({
-          locality_id: location.locality_id,
-          latitude: Number(location.latitude),
-          longitude: Number(location.longitude),
-          locality: location.locality,
-          locality_id: location.locality_id,
-          locality_hotspot: location.locality_hotspot,
-          country: location.country,
-          country_code: location.country_code,
-          state: location.state,
-          state_code: location.state_code,
-          county: location.county,
-          county_code: location.county_code,
-          checklist_count: location.checklist_count,
-          checklist_count_complete: location.checklist_count_complete,
-          checklist_count_incomplete: location.checklist_count_incomplete,
-          species_checklist_counts: Array.from(location.speciesChecklistCounts.entries()),
-          checklist: location.checklist,
-        })),
+        locations: preparedLocations,
+        checklists: checklistsByLocation,
         region,
         filters: buildSerializableFilters(),
       };

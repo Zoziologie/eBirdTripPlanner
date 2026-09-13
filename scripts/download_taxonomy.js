@@ -9,6 +9,21 @@ const projectRoot = path.resolve(__dirname, "..");
 const envPath = path.join(projectRoot, ".env");
 const outputPath = path.join(projectRoot, "src/assets/eBird_taxonomy.json");
 
+// The eBird payload carries family/banding/code fields the app never reads. It
+// ships inside the JS bundle, so keep only what is actually used: doing so more
+// than halves the download, the parse cost and the resident size.
+const TAXONOMY_FIELDS = ["sciName", "comName", "speciesCode", "category", "taxonOrder", "reportAs"];
+
+const slimTaxonomy = (rows) =>
+  rows.map((row) => {
+    const slim = {};
+    for (const field of TAXONOMY_FIELDS) {
+      const value = row[field];
+      if (value !== undefined && value !== null && value !== "") slim[field] = value;
+    }
+    return slim;
+  });
+
 const loadEnvFile = (filePath) => {
   if (!fs.existsSync(filePath)) return;
 
@@ -64,16 +79,23 @@ https
           return;
         }
 
+        let parsed;
         try {
-          JSON.parse(data);
+          parsed = JSON.parse(data);
         } catch (error) {
           console.error(`❌ Invalid JSON payload from eBird API: ${error.message}`);
           process.exitCode = 1;
           return;
         }
 
-        fs.writeFileSync(outputPath, data, "utf8");
-        console.log(`✅ Fetched and saved taxonomy to ${outputPath}`);
+        if (!Array.isArray(parsed)) {
+          console.error("❌ Unexpected taxonomy payload: expected an array.");
+          process.exitCode = 1;
+          return;
+        }
+
+        fs.writeFileSync(outputPath, JSON.stringify(slimTaxonomy(parsed)), "utf8");
+        console.log(`✅ Fetched and saved ${parsed.length} taxa to ${outputPath}`);
       });
     },
   )

@@ -1,21 +1,23 @@
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from "vue";
+import { ref, shallowRef, computed, onMounted, onBeforeUnmount, watch, nextTick } from "vue";
 import vSelect from "vue-select";
 import "vue-select/dist/vue-select.css";
 import mapboxgl from "mapbox-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
 import MapboxGeocoder from "@mapbox/mapbox-gl-geocoder";
 import "@mapbox/mapbox-gl-geocoder/dist/mapbox-gl-geocoder.css";
-import * as turf from "@turf/turf";
+import { circle as turfCircle } from "@turf/circle";
+import { destination as turfDestination } from "@turf/destination";
+import { distance as turfDistance } from "@turf/distance";
 import { useTripBundleLoader } from "../composables/useTripBundleLoader";
 import { db } from "../data/db";
 import { selectedTripId, refreshTrips } from "../state/tripSelection";
 import { selectedVisitId } from "../state/visitSelection";
 import { resolveRecordConflict, withUpdatedAt } from "../utils/recordConflicts";
 
-const tripData = ref(null);
-const locations = ref([]);
-const visits = ref([]);
+const tripData = shallowRef(null);
+const locations = shallowRef([]);
+const visits = shallowRef([]);
 
 const visitForm = ref({
   name: "",
@@ -233,37 +235,60 @@ const searchableLocations = computed(() => {
     .filter(Boolean);
 });
 
+// Cheap bounding-box reject before the exact distance check: at most a handful
+// of locations survive it, so the expensive work stays proportional to the radius
+// rather than to the size of the EBD import.
+const makeRadiusFilter = (centerLon, centerLat, radiusKm) => {
+  if (!Number.isFinite(centerLon) || !Number.isFinite(centerLat) || !(radiusKm > 0)) return null;
+  const latRange = radiusKm / 111;
+  const lonRange = radiusKm / (111 * Math.max(Math.cos((centerLat * Math.PI) / 180), 0.2));
+  const center = [centerLon, centerLat];
+  return (lon, lat) => {
+    if (!Number.isFinite(lon) || !Number.isFinite(lat)) return false;
+    if (Math.abs(lat - centerLat) > latRange) return false;
+    if (Math.abs(lon - centerLon) > lonRange) return false;
+    return distanceKm(center, [lon, lat]) <= radiusKm;
+  };
+};
+
 const selectedVisitStats = computed(() => {
   const visit = selectedVisit.value;
   if (!visit || getVisitType(visit) !== "birding") {
     return { species: 0, checklists: 0, locations: 0, medianDurationLabel: "" };
   }
-  const center = [visit.longitude, visit.latitude];
-  const radiusKm = Number(visit.radiusKm) || 0;
+  const isWithin = makeRadiusFilter(
+    toNumber(visit.longitude, NaN),
+    toNumber(visit.latitude, NaN),
+    Number(visit.radiusKm) || 0,
+  );
   const speciesSet = new Set();
   const durations = [];
   let checklistTotal = 0;
   let locationCount = 0;
 
-  locations.value.forEach((location) => {
-    const distanceKm = turf.distance(center, [location.longitude, location.latitude], {
-      units: "kilometers",
-    });
-    if (distanceKm <= radiusKm) {
+  if (isWithin) {
+    locations.value.forEach((location) => {
+      if (!isWithin(Number(location.longitude), Number(location.latitude))) return;
       locationCount += 1;
       checklistTotal += location.checklist_count || 0;
-      (Array.isArray(location.checklist) ? location.checklist : []).forEach((checklist) => {
-        const minutes = Number(checklist?.duration_minutes);
-        if (Number.isFinite(minutes) && minutes > 0) {
-          durations.push(minutes);
+      // Current trips keep just the durations on the location; older ones still have
+      // the full checklist records inline.
+      if (Array.isArray(location.checklist_durations)) {
+        for (const minutes of location.checklist_durations) {
+          if (Number.isFinite(minutes) && minutes > 0) durations.push(minutes);
         }
-      });
+      } else if (Array.isArray(location.checklist)) {
+        for (const checklist of location.checklist) {
+          const minutes = Number(checklist?.duration_minutes);
+          if (Number.isFinite(minutes) && minutes > 0) durations.push(minutes);
+        }
+      }
       const entries = location.species_checklist_counts || [];
       for (const [code] of entries) {
         speciesSet.add(code);
       }
-    }
-  });
+    });
+  }
 
   const sortedDurations = durations.slice().sort((a, b) => a - b);
   let medianDurationLabel = "";
@@ -311,20 +336,13 @@ const buildVisitStats = (visit) => {
     };
   }
 
-  const latRange = radiusKm / 111;
-  const centerLatRad = (centerLat * Math.PI) / 180;
-  const cosLat = Math.cos(centerLatRad);
-  const lonRange = radiusKm / (111 * Math.max(cosLat, 0.2));
+  const isWithin = makeRadiusFilter(centerLon, centerLat, radiusKm);
   const speciesCounts = {};
   let checklistCount = 0;
   let locationCount = 0;
 
   locationMeta.value.forEach((location) => {
-    const locLon = location.lon;
-    const locLat = location.lat;
-    if (Math.abs(locLat - centerLat) > latRange) return;
-    if (Math.abs(locLon - centerLon) > lonRange) return;
-    if (distanceKm([centerLon, centerLat], [locLon, locLat]) > radiusKm) return;
+    if (!isWithin(location.lon, location.lat)) return;
 
     locationCount += 1;
     checklistCount += location.checklistCount;
@@ -489,13 +507,12 @@ const getNextVisitDateTime = () => {
 
 const getVisitName = (center, radiusKm) => {
   if (!locations.value.length) return "New visit";
+  const isWithin = makeRadiusFilter(Number(center[0]), Number(center[1]), radiusKm);
+  if (!isWithin) return "New visit";
   const localityCounts = new Map();
   let hotspotBest = null;
   locations.value.forEach((location) => {
-    const distanceKm = turf.distance(center, [location.longitude, location.latitude], {
-      units: "kilometers",
-    });
-    if (distanceKm > radiusKm) return;
+    if (!isWithin(Number(location.longitude), Number(location.latitude))) return;
     const localityName = location.locality || "Unknown location";
     localityCounts.set(
       localityName,
@@ -555,7 +572,7 @@ const refreshRouteSource = () => {
     type: "FeatureCollection",
     features,
   });
-  updateMapData();
+  updateVisitSources();
 };
 
 const handleTripLocationsEnter = (event) => {
@@ -1097,7 +1114,7 @@ const getEffectiveCenter = (visit) => {
 const updateRadiusHandlePositions = (center, radiusKm, skipIndex = null) => {
   radiusBearings.forEach((bearing, index) => {
     if (skipIndex !== null && index === skipIndex) return;
-    const handlePoint = turf.destination(center, radiusKm, bearing, { units: "kilometers" });
+    const handlePoint = turfDestination(center, radiusKm, bearing, { units: "kilometers" });
     const handleCoords = handlePoint.geometry.coordinates;
     const marker = radiusMarkers[index];
     if (marker) {
@@ -1134,7 +1151,7 @@ const updateVisitMarkers = () => {
     selectedVisitMarker.on("drag", () => {
       const { lng, lat } = selectedVisitMarker.getLngLat();
       previewCenter.value = [lng, lat];
-      updateMapData();
+      updateVisitSources();
       const currentVisit = selectedVisit.value || visit;
       const currentRadius = getEffectiveRadiusKm(currentVisit);
       updateRadiusHandlePositions([lng, lat], currentRadius);
@@ -1185,12 +1202,12 @@ const updateVisitMarkers = () => {
         const { lng, lat } = marker.getLngLat();
         const currentVisit = selectedVisit.value || visit;
         const currentCenter = getEffectiveCenter(currentVisit);
-        const newRadius = turf.distance(currentCenter, [lng, lat], {
+        const newRadius = turfDistance(currentCenter, [lng, lat], {
           units: "kilometers",
         });
         const safeRadius = Math.max(newRadius, 0.1);
         previewRadiusKm.value = safeRadius;
-        updateMapData();
+        updateVisitSources();
         updateRadiusHandlePositions(currentCenter, safeRadius, index);
       });
 
@@ -1199,7 +1216,7 @@ const updateVisitMarkers = () => {
         const { lng, lat } = marker.getLngLat();
         const currentVisit = selectedVisit.value || visit;
         const currentCenter = getEffectiveCenter(currentVisit);
-        const newRadius = turf.distance(currentCenter, [lng, lat], {
+        const newRadius = turfDistance(currentCenter, [lng, lat], {
           units: "kilometers",
         });
         const safeRadius = Math.max(newRadius, 0.1);
@@ -1218,7 +1235,6 @@ const updateVisitMarkers = () => {
   }
 
   updateRadiusHandlePositions(center, radiusKm);
-  updateNonBirdingMarkers();
 };
 
 const clearNonBirdingMarkers = () => {
@@ -1299,6 +1315,7 @@ const loadTripData = async (tripId) => {
   applyLoadedVisits(bundle.visits);
   await nextTick();
   updateMapData();
+  updateNonBirdingMarkers();
   fitMapToLocations();
 };
 
@@ -1357,7 +1374,9 @@ const applyVisitUpdates = async (visitId, updates, options = {}) => {
   const nextUpdates = withUpdatedAt(updates);
   await db.visits.update(visitId, nextUpdates);
   if (index >= 0) {
-    visits.value[index] = { ...visits.value[index], ...nextUpdates };
+    const nextVisits = visits.value.slice();
+    nextVisits[index] = { ...nextVisits[index], ...nextUpdates };
+    visits.value = nextVisits;
   }
   if (options.syncForm) {
     syncVisitForm();
@@ -1817,10 +1836,8 @@ const handleKeydown = (event) => {
   }
 };
 
-const updateMapData = () => {
-  if (!map || !mapLoaded) return;
-
-  const locationFeatures = locations.value.map((location) => ({
+const locationFeatures = computed(() =>
+  locations.value.map((location) => ({
     type: "Feature",
     geometry: {
       type: "Point",
@@ -1833,7 +1850,23 @@ const updateMapData = () => {
       locality_id: location.locality_id || "",
       locality_hotspot: location.locality_hotspot === true,
     },
-  }));
+  })),
+);
+
+const updateLocationsSource = () => {
+  if (!map || !mapLoaded) return;
+  const locationsSource = map.getSource("trip-locations");
+  if (!locationsSource) return;
+  locationsSource.setData({
+    type: "FeatureCollection",
+    features: locationFeatures.value,
+  });
+};
+
+// Visit-derived layers only. Called on every pointer move while dragging a
+// visit centre or radius handle, so it must stay proportional to visit count.
+const updateVisitSources = () => {
+  if (!map || !mapLoaded) return;
 
   const visitPointFeatures = visits.value.map((visit) => {
     const center = getEffectiveCenter(visit);
@@ -1856,7 +1889,7 @@ const updateMapData = () => {
     .filter((visit) => getVisitType(visit) === "birding")
     .map((visit) => {
       const center = getEffectiveCenter(visit);
-      return turf.circle(center, getEffectiveRadiusKm(visit), {
+      return turfCircle(center, getEffectiveRadiusKm(visit), {
         units: "kilometers",
         steps: 64,
         properties: {
@@ -1892,14 +1925,6 @@ const updateMapData = () => {
     });
   }
 
-  const locationsSource = map.getSource("trip-locations");
-  if (locationsSource) {
-    locationsSource.setData({
-      type: "FeatureCollection",
-      features: locationFeatures,
-    });
-  }
-
   const visitsSource = map.getSource("visits-points");
   if (visitsSource) {
     visitsSource.setData({
@@ -1923,8 +1948,11 @@ const updateMapData = () => {
       features: visitPathSegments,
     });
   }
+};
 
-  updateNonBirdingMarkers();
+const updateMapData = () => {
+  updateLocationsSource();
+  updateVisitSources();
 };
 
 const fitMapToLocations = () => {
@@ -2116,6 +2144,7 @@ const setupMapLayers = () => {
   map.on("click", handleMapClick);
 
   updateMapData();
+  updateNonBirdingMarkers();
   if (selectedVisit.value) {
     focusOnVisit();
   } else {
@@ -2172,7 +2201,7 @@ watch(selectedTripId, loadTripData, { immediate: true });
 watch(selectedVisitId, () => {
   syncVisitForm();
   nameNeedsUpdate.value = false;
-  updateMapData();
+  updateVisitSources();
   clearVisitMarkers();
   updateVisitMarkers();
   if (skipNextFocus.value) {
@@ -2182,14 +2211,11 @@ watch(selectedVisitId, () => {
   focusOnVisit();
   scrollToSelectedVisit();
 });
-watch(
-  visits,
-  () => {
-    updateMapData();
-    updateVisitMarkers();
-  },
-  { deep: true },
-);
+watch(visits, () => {
+  updateVisitSources();
+  updateNonBirdingMarkers();
+  updateVisitMarkers();
+});
 watch(mapStyle, (style) => {
   if (!map) return;
   const currentCenter = map.getCenter();

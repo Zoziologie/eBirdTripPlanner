@@ -1,5 +1,5 @@
 <script setup>
-import { ref, shallowRef, onMounted, watch, computed, nextTick } from "vue";
+import { ref, shallowRef, onMounted, onUnmounted, watch, computed, nextTick } from "vue";
 import { useRoute } from "vue-router";
 import { Tooltip, Popover } from "bootstrap";
 import vSelect from "vue-select";
@@ -13,7 +13,7 @@ import { ebdUpdatedAt } from "../state/ebdUpdates";
 
 const trip = shallowRef(null);
 const ebd = shallowRef(null);
-const visits = ref([]);
+const visits = shallowRef([]);
 const locations = shallowRef([]);
 const speciesList = shallowRef([]);
 const {
@@ -64,24 +64,25 @@ const rateFilterLabel = computed(() =>
   hasSelectedVisit.value ? "Location (min)" : "Average trip (min)",
 );
 
-const locationMeta = computed(() => {
-  const base = locations.value || [];
-  return base
-    .map((location) => {
-      const lon = toNumber(location.longitude, NaN);
-      const lat = toNumber(location.latitude, NaN);
-      if (!Number.isFinite(lon) || !Number.isFinite(lat)) return null;
-      const entries = Array.isArray(location.species_checklist_counts)
-        ? location.species_checklist_counts
-        : [];
-      return {
-        lon,
-        lat,
-        checklistCount: toNumber(location.checklist_count, 0),
-        speciesEntries: entries,
-      };
-    })
-    .filter(Boolean);
+const ebdTotals = computed(() => {
+  const speciesCounts = new Map();
+  let checklistCount = 0;
+  for (const location of locations.value || []) {
+    if (
+      !Number.isFinite(toNumber(location.longitude, NaN)) ||
+      !Number.isFinite(toNumber(location.latitude, NaN))
+    ) {
+      continue;
+    }
+    checklistCount += toNumber(location.checklist_count, 0);
+    const entries = Array.isArray(location.species_checklist_counts)
+      ? location.species_checklist_counts
+      : [];
+    for (const [code, count] of entries) {
+      speciesCounts.set(code, (speciesCounts.get(code) || 0) + toNumber(count, 0));
+    }
+  }
+  return { checklistCount, speciesCounts };
 });
 
 const toNumber = (value, fallback = 0) => {
@@ -187,74 +188,62 @@ const visitsWithStats = computed(() => {
     });
 });
 
-const totalChecklistCount = computed(() =>
-  locationMeta.value.reduce((sum, location) => sum + location.checklistCount, 0),
+const totalChecklistCount = computed(() => ebdTotals.value.checklistCount);
+
+const overallSpeciesCounts = computed(() => ebdTotals.value.speciesCounts);
+
+const nameCollator = new Intl.Collator(undefined);
+
+// Sorted once per species list rather than on every probability recompute;
+// Array#sort is stable, so this stays the tie-break for every table sort below.
+const speciesSortedByName = computed(() =>
+  (speciesList.value || [])
+    .slice()
+    .sort((a, b) => nameCollator.compare(a.commonName || "", b.commonName || "")),
 );
 
-const overallSpeciesCounts = computed(() => {
-  const counts = new Map();
-  locationMeta.value.forEach((location) => {
-    location.speciesEntries.forEach(([code, count]) => {
-      counts.set(code, (counts.get(code) || 0) + toNumber(count, 0));
-    });
-  });
-  return counts;
-});
-
 const speciesWithProbabilities = computed(() => {
-  const list = speciesList.value || [];
-  const visitStats = visitsWithStats.value;
+  const list = speciesSortedByName.value;
   if (!list.length) return [];
-  const visitsWithChecklist = visitStats.filter((visit) => visit.checklistCount > 0);
-  const selectedId = selectedLocationVisit.value?.id;
-  return list
-    .map((species) => {
-      let independentMiss = 1;
-      let rateSum = 0;
-      let rateCount = 0;
-      let selectedRate = null;
+  const visitsWithChecklist = visitsWithStats.value.filter((visit) => visit.checklistCount > 0);
+  const selected = selectedLocationVisit.value;
+  const selectedVisit = selected
+    ? visitsWithChecklist.find((visit) => String(visit.id) === String(selected.id))
+    : null;
+  const totalChecklists = totalChecklistCount.value;
+  const overallCounts = overallSpeciesCounts.value;
 
-      visitsWithChecklist.forEach((visit) => {
-        const count = visit.speciesCounts.get(species.code) || 0;
-        const rate = count / visit.checklistCount;
-        rateSum += rate;
-        rateCount += 1;
-        if (rate > 0) {
-          const adjusted = 1 - Math.pow(1 - rate, visit.effort || 1);
-          independentMiss *= 1 - Math.min(Math.max(adjusted, 0), 1);
-        }
-        if (selectedId && String(visit.id) === String(selectedId)) {
-          selectedRate = rate;
-        }
-      });
+  return list.map((species) => {
+    const code = species.code;
+    // Resolved up front so the rank below needs a single pass instead of one
+    // nested pass over every visit for every species.
+    const selectedRate = selectedVisit
+      ? (selectedVisit.speciesCounts.get(code) || 0) / selectedVisit.checklistCount
+      : null;
+    let independentMiss = 1;
+    let rateSum = 0;
+    let higherCount = 0;
 
-      const total = 1 - independentMiss;
-      const avgRate = rateCount ? rateSum / rateCount : 0;
-      let locationRate = null;
-      let locationRank = null;
-      if (selectedId && selectedRate !== null) {
-        locationRate = selectedRate;
-        let higherCount = 0;
-        visitsWithChecklist.forEach((visit) => {
-          const count = visit.speciesCounts.get(species.code) || 0;
-          const rate = count / visit.checklistCount;
-          if (rate > selectedRate) higherCount += 1;
-        });
-        locationRank = higherCount + 1;
+    for (const visit of visitsWithChecklist) {
+      const rate = (visit.speciesCounts.get(code) || 0) / visit.checklistCount;
+      rateSum += rate;
+      if (rate > 0) {
+        const adjusted = 1 - Math.pow(1 - rate, visit.effort || 1);
+        independentMiss *= 1 - Math.min(Math.max(adjusted, 0), 1);
       }
+      if (selectedRate !== null && rate > selectedRate) higherCount += 1;
+    }
 
-      return {
-        ...species,
-        totalProbability: Math.min(Math.max(total, 0), 1),
-        overallRate: totalChecklistCount.value
-          ? (overallSpeciesCounts.value.get(species.code) || 0) / totalChecklistCount.value
-          : 0,
-        avgRate,
-        locationRate,
-        locationRank,
-      };
-    })
-    .sort((a, b) => (a.commonName || "").localeCompare(b.commonName || ""));
+    const rateCount = visitsWithChecklist.length;
+    return {
+      ...species,
+      totalProbability: Math.min(Math.max(1 - independentMiss, 0), 1),
+      overallRate: totalChecklists ? (overallCounts.get(code) || 0) / totalChecklists : 0,
+      avgRate: rateCount ? rateSum / rateCount : 0,
+      locationRate: selectedRate,
+      locationRank: selectedRate === null ? null : higherCount + 1,
+    };
+  });
 });
 
 const formatPercent = (value) => {
@@ -424,7 +413,9 @@ const toggleTargetSpecies = async (code, checked) => {
   await db.visits.update(visit.id, nextUpdates);
   const index = visits.value.findIndex((item) => String(item.id) === String(visit.id));
   if (index >= 0) {
-    visits.value[index] = { ...visits.value[index], ...nextUpdates };
+    const nextVisits = visits.value.slice();
+    nextVisits[index] = { ...nextVisits[index], ...nextUpdates };
+    visits.value = nextVisits;
   }
 };
 
@@ -536,7 +527,7 @@ const sortedSpecies = computed(() => {
       return (aOrder - bOrder) * dir;
     }
     if (sortKey.value === "name") {
-      return (a.commonName || "").localeCompare(b.commonName || "") * dir;
+      return nameCollator.compare(a.commonName || "", b.commonName || "") * dir;
     }
     if (sortKey.value === "overall") {
       return (a.overallRate - b.overallRate) * dir;
@@ -701,28 +692,54 @@ watch(
   },
   { immediate: true },
 );
+// Bootstrap keeps its instances in a strong Map keyed by element, so an
+// undisposed tooltip pins its detached DOM node for the life of the page. Track
+// what we create so it can be released when this page goes away.
+//
+// animation:false is load-bearing, not cosmetic. Tooltip#hide() defers its
+// completion callback until the tip's CSS transition ends, and that callback
+// reads _activeTrigger, which dispose() nulls out. Navigating away blurs a
+// focused popover, so the hide transition is still in flight when we tear down
+// and the deferred callback throws. Without the animation the callback runs
+// synchronously and disposal is safe.
+const OVERLAY_OPTIONS = { animation: false };
+
+let bootstrapOverlays = [];
+let isUnmounted = false;
+
+const syncBootstrapOverlays = () => {
+  nextTick(() => {
+    if (isUnmounted) return;
+    bootstrapOverlays = [
+      ...Array.from(document.querySelectorAll('[data-bs-toggle="tooltip"]'), (el) =>
+        Tooltip.getOrCreateInstance(el, OVERLAY_OPTIONS),
+      ),
+      ...Array.from(document.querySelectorAll('[data-bs-toggle="popover"]'), (el) =>
+        Popover.getOrCreateInstance(el, OVERLAY_OPTIONS),
+      ),
+    ];
+  });
+};
+
 onMounted(async () => {
   await refreshTrips();
-  nextTick(() => {
-    document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach((el) => {
-      new Tooltip(el);
-    });
-    document.querySelectorAll('[data-bs-toggle="popover"]').forEach((el) => {
-      new Popover(el);
-    });
-  });
+  syncBootstrapOverlays();
 });
 
-watch(selectedTripId, () => {
-  nextTick(() => {
-    document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach((el) => {
-      new Tooltip(el);
-    });
-    document.querySelectorAll('[data-bs-toggle="popover"]').forEach((el) => {
-      new Popover(el);
-    });
-  });
+watch(selectedTripId, syncBootstrapOverlays);
+
+onUnmounted(() => {
+  isUnmounted = true;
+  for (const overlay of bootstrapOverlays) {
+    try {
+      overlay.dispose();
+    } catch {
+      // Already torn down with its element; nothing left to release.
+    }
+  }
+  bootstrapOverlays = [];
 });
+
 </script>
 
 <template>
@@ -864,10 +881,10 @@ watch(selectedTripId, () => {
                       data-bs-toggle="popover"
                       data-bs-trigger="hover focus"
                       data-bs-placement="top"
-                      data-bs-title="Row number"
-                      data-bs-content="Shows the current row index (sorted by taxon order when you click)."
+                      data-bs-title="Taxonomic order"
+                      data-bs-content="Sorts species by taxonomic order. The number shows the current position in the filtered list."
                     >
-                      # <i :class="[sortIcon('taxon'), 'ms-1']"></i>
+                      Tax. <i :class="[sortIcon('taxon'), 'ms-1']"></i>
                     </button>
                   </th>
                   <th class="text-center" v-if="showInterestColumn">
@@ -979,7 +996,7 @@ watch(selectedTripId, () => {
                       :class="{ 'fw-bold': isTargetSpecies(species.code) }"
                     >
                       <a
-                        v-if="getSpeciesMapUrl(species.code)"
+                        v-if="species.code"
                         :href="getSpeciesMapUrl(species.code)"
                         target="_blank"
                         class="text-reset text-decoration-none"
