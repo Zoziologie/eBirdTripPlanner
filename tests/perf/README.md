@@ -1,7 +1,7 @@
 # Testing
 
 ```bash
-npm test              # correctness: EBD parsing
+npm test              # correctness: EBD parsing and the comment corpus
 npm run perf:standard # fast end-to-end check on a tiny fixture
 ```
 
@@ -29,7 +29,7 @@ a quote, and the damage was:
 
 `EBD_PARSE_OPTIONS` disables `quoteChar`/`escapeChar` for this reason. The
 failure is silent - no parse error, no warning, just missing observations - so
-`tests/unit/ebd-parsing.test.mjs` guards it, and the generated fixture
+`tests/unit/ebd-comments.test.mjs` guards it, and the generated fixture
 deliberately over-represents quote-opening comments so even a tiny dev fixture
 exercises the path.
 
@@ -58,6 +58,7 @@ Shape statistics, for reasoning about a specific code path:
 - 46.7% of rows belong to shared group checklists, so a checklist averages 19.4
   rows against the 16.7 species it records
 - 3.5% of observations carry a species comment: median 17 chars, mean 36, max 2,735
+- 10.5% of checklists carry a checklist comment: median 50 chars, mean 85
 
 ### Visits
 
@@ -69,15 +70,18 @@ a visit as a cheap object to deep-clone or deep-watch.
 
 ## How a trip is stored
 
-Two tables, because the pages have very different appetites:
+Three tables, because the pages have three very different appetites:
 
 | table | key | 1x size | read when |
 |---|---|---|---|
 | `ebd` | `tripId` | 18.6 MB | every page, always |
 | `checklists` | `[tripId+localityId]` | 105.3 MB (33,370 rows) | a map popup or KML export needs one location |
+| `comments` | `tripId` | 11.3 MB (35,149 entries) | someone exports comments |
 
 The split exists because checklists were ~99% of the old single record while only
-two features read them.
+two features read them, and because a comment export keyed by species would
+otherwise have to read most of the `checklists` table - a widespread species
+spans thousands of localities.
 
 Two details worth knowing before touching this:
 
@@ -86,9 +90,10 @@ Two details worth knowing before touching this:
   that cannot be recovered from per-location medians. They cost well under 1 MB.
 - **There are no migrations, on purpose.** Only the current schema is declared in
   `db.js`; superseded ones are not kept. A trip keeps whatever shape it was
-  written with, so an older trip may still carry `location.checklist` inline -
-  re-import its EBD to bring it up to date. The schema version is the minor
-  version in `package.json` (schema 2 ships as 0.2.x); bump them together.
+  written with, so an older trip may carry `location.checklist` inline or have no
+  comment corpus at all - re-import its EBD to bring it up to date. The schema
+  version is the minor version in `package.json` (schema 3 ships as 0.3.x); bump
+  them together.
 
 Peak heap when opening each page, measured with `perf:large-flow` on a persistent
 profile:
@@ -107,6 +112,10 @@ Importing an EBD is a **desktop** activity - it peaks around 0.8-1.5 GB of heap
 and is expected to. Everything *after* the import has to survive a **phone**
 (roughly 300-400 MB before the OS kills the tab), so post-import heap is the
 number that matters most.
+
+Comment export is deliberately the exception: it is a rare, explicit action, so
+it reads the whole corpus and formats it without any indexing. At 1x that is a
+transient ~11 MB; at 4x, ~45 MB.
 
 ## Measuring in a browser: use a persistent profile
 
@@ -152,12 +161,12 @@ npm run perf:large-flow -- /tmp/ebd-2x.zip
 
 Fixture output at each scale (seed 42), against the real export it models:
 
-| | rows | checklists | locations | `.txt` | zip | `ebd` | `checklists` |
-|---|---|---|---|---|---|---|---|
-| real `ebd_MX-ROO` | 2.76M | 142,206 | 33,370 | 1.1 GB | 104 MB | 18.6 MB | 105.3 MB |
-| scale 0.02 | 45,040 | 2,708 | 621 | 16 MB | 2 MB | 0.5 MB | 2.0 MB |
-| scale 1 | 2.40M | 144,938 | 33,370 | 855 MB | 108 MB | 27.7 MB | 108.3 MB |
-| scale 2 | 4.82M | 290,800 | 66,740 | 1.7 GB | 217 MB | 55.2 MB | 216.8 MB |
+| | rows | checklists | locations | `.txt` | zip | `ebd` | `checklists` | `comments` |
+|---|---|---|---|---|---|---|---|---|
+| real `ebd_MX-ROO` | 2.76M | 142,206 | 33,370 | 1.1 GB | 104 MB | 18.6 MB | 105.3 MB | 11.3 MB |
+| scale 0.02 | 45,040 | 2,708 | 621 | 16 MB | 2 MB | 0.5 MB | 2.0 MB | 0.3 MB |
+| scale 1 | 2.40M | 144,938 | 33,370 | 855 MB | 108 MB | 27.7 MB | 108.3 MB | 15.2 MB |
+| scale 2 | 4.82M | 290,800 | 66,740 | 1.7 GB | 217 MB | 55.2 MB | 216.8 MB | 30.5 MB |
 
 Scale 1 matches the real export closely on the table that dominates memory
 (`checklists`, within 3%) and on location count exactly. Known simplifications:
@@ -167,6 +176,8 @@ Scale 1 matches the real export closely on the table that dominates memory
   never exercises the group-merge path in `addEbdRow`.
 - **The `ebd` record runs ~49% large** because species are drawn independently
   per checklist, so a location accumulates more distinct species than a real one.
+- **Comments are spread too evenly** (65k comment-bearing checklists against a
+  real 35k): real observers either comment often or never.
 
 Run these with a persistent profile (see above).
 

@@ -25,6 +25,8 @@ const EBD_COLUMNS = {
   durationMinutes: "DURATION MINUTES",
   effortDistanceKm: "EFFORT DISTANCE KM",
   speciesComments: "SPECIES COMMENTS",
+  // eBird renamed this column; exports older than 2024 call it "TRIP COMMENTS".
+  checklistComments: ["CHECKLIST COMMENTS", "TRIP COMMENTS"],
 };
 
 const EBD_COLUMN_FIELDS = Object.keys(EBD_COLUMNS);
@@ -39,7 +41,16 @@ const buildColumnIndex = (headerRow) => {
   }
   const columns = {};
   for (const field of EBD_COLUMN_FIELDS) {
-    const index = positions.get(EBD_COLUMNS[field]);
+    const names = EBD_COLUMNS[field];
+    let index;
+    if (Array.isArray(names)) {
+      for (const name of names) {
+        index = positions.get(name);
+        if (index !== undefined) break;
+      }
+    } else {
+      index = positions.get(names);
+    }
     columns[field] = index === undefined ? -1 : index;
   }
   if (columns.scientificName < 0 || columns.checklistId < 0) return null;
@@ -47,6 +58,15 @@ const buildColumnIndex = (headerRow) => {
 };
 
 const cell = (row, index) => (index < 0 ? undefined : row[index]);
+
+// Group checklists and subspecies rollups fold several rows into one record, so
+// a comment can arrive more than once for the same target. Append only what is
+// genuinely new.
+const mergeComment = (existing, incoming) => {
+  if (!incoming || incoming === existing) return existing;
+  if (!existing) return incoming;
+  return `${existing}; ${incoming}`;
+};
 
 // "2019-04-21" -> 2019, without allocating a substring per row.
 const parseYear = (date) => {
@@ -147,14 +167,31 @@ export const addEbdRow = (row, accumulator) => {
       effort_distance_km: Number(cell(row, columns.effortDistanceKm)),
       all_species_reported: isComplete,
       speciesByCode: isComplete ? new Map() : null,
+      checklist_comment: cell(row, columns.checklistComments) || "",
+      // Comment-bearing species only, kept for every checklist including the
+      // incomplete ones whose species records are otherwise discarded. This is
+      // the source for the comment corpus; allocated lazily because ~90% of
+      // checklists carry no comment at all.
+      commentsByCode: null,
     };
     accumulator.checklists.set(groupId, checklist);
   } else {
     checklist.all_species_reported = checklist.all_species_reported && isComplete;
     if (!checklist.all_species_reported) checklist.speciesByCode = null;
+    checklist.checklist_comment = mergeComment(
+      checklist.checklist_comment,
+      cell(row, columns.checklistComments),
+    );
   }
 
   const rowComment = cell(row, columns.speciesComments);
+  if (rowComment) {
+    if (!checklist.commentsByCode) checklist.commentsByCode = new Map();
+    checklist.commentsByCode.set(
+      taxon.speciesCode,
+      mergeComment(checklist.commentsByCode.get(taxon.speciesCode), rowComment),
+    );
+  }
 
   if (!checklist.speciesByCode) return;
 
@@ -176,11 +213,7 @@ export const addEbdRow = (row, accumulator) => {
   } else if (!existing.count && count) {
     existing.count = count;
   }
-  if (rowComment && rowComment !== existing.species_comment) {
-    existing.species_comment = existing.species_comment
-      ? `${existing.species_comment}; ${rowComment}`
-      : rowComment;
-  }
+  existing.species_comment = mergeComment(existing.species_comment, rowComment);
 };
 
 export const finalizeEbdImport = (accumulator) => {
@@ -189,6 +222,10 @@ export const finalizeEbdImport = (accumulator) => {
       ? Array.from(checklist.speciesByCode.values())
       : [];
     delete checklist.speciesByCode;
+    checklist.species_comments = checklist.commentsByCode
+      ? Array.from(checklist.commentsByCode.entries())
+      : [];
+    delete checklist.commentsByCode;
   }
 
   return {

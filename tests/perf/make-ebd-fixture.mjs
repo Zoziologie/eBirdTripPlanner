@@ -39,6 +39,9 @@ const REFERENCE = {
   // vacuumed file content into any comment starting with a quote.
   commentRate: 0.0351,
   commentLength: { mu: Math.log(17), sigma: 1.229, max: 2735 },
+  // 10.5% of checklists carry a checklist-level comment: median 50, mean 85.
+  checklistCommentRate: 0.1047,
+  checklistCommentLength: { mu: Math.log(50), sigma: 1.035, max: 3495 },
   // Deliberately above the real 0.0006 so even a scale-0.02 dev fixture contains
   // comments that open with a double quote. Those are what exposed the parser
   // dropping 7.1% of rows; at the true rate a small fixture would contain none.
@@ -142,9 +145,13 @@ const run = async () => {
   const drawChecklistCount = makeLognormal(random, REFERENCE.checklistsPerLocation);
   const drawDuration = makeLognormal(random, REFERENCE.durationMinutes);
   const drawCommentLength = makeLognormal(random, REFERENCE.commentLength);
+  const drawChecklistCommentLength = makeLognormal(random, REFERENCE.checklistCommentLength);
   const COMMENT_SOURCE =
     "Seen well in the canopy, photographed; heard calling repeatedly nearby; " +
     "compared against reference recordings and confirmed by a second observer. ";
+  const CHECKLIST_COMMENT_SOURCE =
+    "Morning walk along the entrance track, light wind and broken cloud; " +
+    "access is through the gate by the km 12 marker, park on the verge. ";
   const makeText = (source, length) => {
     let text = "";
     while (text.length < length) text += source;
@@ -154,6 +161,8 @@ const run = async () => {
     return random() < REFERENCE.leadingQuoteRate ? `"${text.slice(1)}` : text;
   };
   const makeComment = () => makeText(COMMENT_SOURCE, drawCommentLength());
+  const makeChecklistComment = () =>
+    makeText(CHECKLIST_COMMENT_SOURCE, drawChecklistCommentLength());
 
   const { bbox } = REFERENCE;
   const counties = Array.from({ length: 12 }, (_, i) => ({
@@ -212,6 +221,9 @@ const run = async () => {
       const date = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
       const time = `${String(5 + Math.floor(random() * 14)).padStart(2, "0")}:${String(Math.floor(random() * 60)).padStart(2, "0")}:00`;
       const duration = drawDuration();
+      // Repeated on every row of the checklist, exactly as eBird exports it.
+      const checklistComment =
+        random() < REFERENCE.checklistCommentRate ? makeChecklistComment() : "";
 
       // Sample without replacement so a checklist never repeats a species.
       const wanted = drawSpeciesCount();
@@ -261,6 +273,7 @@ const run = async () => {
         if (random() < REFERENCE.commentRate) {
           row[COL["SPECIES COMMENTS"]] = makeComment();
         }
+        if (checklistComment) row[COL["CHECKLIST COMMENTS"]] = checklistComment;
         buffer += `${row.join("\t")}\n`;
         records += 1;
       }

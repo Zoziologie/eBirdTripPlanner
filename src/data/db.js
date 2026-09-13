@@ -1,7 +1,7 @@
 import Dexie from "dexie";
 
-// The schema version is the minor version in package.json: schema 2 ships as
-// 0.2.x. Bump both together.
+// The schema version is the minor version in package.json: schema 3 ships as
+// 0.3.x. Bump both together.
 //
 // Only the current schema is declared. Superseded versions are deliberately not
 // kept: this is a single-user beta, and carrying migrations for them would buy
@@ -12,15 +12,20 @@ import Dexie from "dexie";
 export const db = new Dexie("ebirdTripPlanner_v1");
 
 // `ebd` is one row per trip and every page loads it whole, so only aggregates
-// live there. `checklists` holds what is large and rarely read: per-location raw
-// checklists (~105 MB for a state-sized trip), fetched only when a map popup or
-// the KML export needs one location. See tests/perf/README.md.
-db.version(2).stores({
+// live there. The other two tables hold what is large and rarely read:
+//   `checklists` - per-location raw checklists (~105 MB for a state-sized trip),
+//     read when a map popup or the KML export needs one location.
+//   `comments`   - every checklist and species comment in the trip, in one row,
+//     read only when someone exports comments. Keeping it out of `checklists`
+//     is what lets "every note about this species" avoid reading thousands of
+//     localities. See tests/perf/README.md.
+db.version(3).stores({
   trips: "id, name, updatedAt",
   ebd: "tripId, updatedAt",
   lists: "[tripId+kind], tripId, kind",
   visits: "++id, tripId, dateTime",
   checklists: "[tripId+localityId], tripId",
+  comments: "tripId",
 });
 
 // Checklists for one location of one trip: { tripId, localityId, checklist: [] }.
@@ -48,3 +53,20 @@ export const storeTripChecklists = async (tripId, checklistsByLocation) => {
 
 export const deleteTripChecklists = (tripId) =>
   tripId ? db.checklists.where("tripId").equals(tripId).delete() : Promise.resolve();
+
+// { tripId, entries: [ { checklist_id, locality_id, date, time, duration_minutes,
+// checklist_comment, species_comments: [[code, text]] } ] }. Only checklists that
+// carry at least one comment are present.
+export const readTripComments = async (tripId) => {
+  if (!tripId) return [];
+  const row = await db.comments.get(tripId);
+  return Array.isArray(row?.entries) ? row.entries : [];
+};
+
+export const storeTripComments = async (tripId, entries) => {
+  if (!tripId) return;
+  await db.comments.put({ tripId, entries: entries || [] });
+};
+
+export const deleteTripComments = (tripId) =>
+  tripId ? db.comments.delete(tripId) : Promise.resolve();

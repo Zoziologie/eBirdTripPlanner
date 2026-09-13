@@ -10,7 +10,8 @@ import { circle as turfCircle } from "@turf/circle";
 import { destination as turfDestination } from "@turf/destination";
 import { distance as turfDistance } from "@turf/distance";
 import { useTripBundleLoader } from "../composables/useTripBundleLoader";
-import { db } from "../data/db";
+import { db, readTripComments } from "../data/db";
+import { buildCommentMarkdown, copyMarkdown, downloadMarkdown } from "../utils/commentExport";
 import { selectedTripId, refreshTrips } from "../state/tripSelection";
 import { selectedVisitId } from "../state/visitSelection";
 import { resolveRecordConflict, withUpdatedAt } from "../utils/recordConflicts";
@@ -308,6 +309,76 @@ const selectedVisitStats = computed(() => {
     medianDurationLabel,
   };
 });
+
+// Every note written inside the visit radius. Reuses the same radius filter the
+// visit summary uses, then narrows the comment corpus to those localities.
+const isExportingComments = ref(false);
+// Confirmation lives on the button itself and clears itself: "" | "copied" |
+// "copy-failed" | "downloaded".
+const commentExportDone = ref("");
+let commentFeedbackTimer = null;
+const flashCommentFeedback = (state) => {
+  commentExportDone.value = state;
+  clearTimeout(commentFeedbackTimer);
+  commentFeedbackTimer = setTimeout(() => {
+    commentExportDone.value = "";
+  }, 2500);
+};
+
+const exportVisitComments = async (mode) => {
+  const visit = selectedVisit.value;
+  if (!visit) return;
+  const centerLon = toNumber(visit.longitude, NaN);
+  const centerLat = toNumber(visit.latitude, NaN);
+  const radiusKm = Number(visit.radiusKm) || 0;
+  const isWithin = makeRadiusFilter(centerLon, centerLat, radiusKm);
+  if (!isWithin) {
+    flashCommentFeedback("copy-failed");
+    return;
+  }
+
+  isExportingComments.value = true;
+  try {
+    const locationsById = new Map();
+    for (const location of locations.value) {
+      if (!isWithin(Number(location.longitude), Number(location.latitude))) continue;
+      locationsById.set(String(location.locality_id), location);
+    }
+    const entries = (await readTripComments(selectedTripId.value)).filter((entry) =>
+      locationsById.has(String(entry.locality_id)),
+    );
+    const speciesNameByCode = new Map(
+      (tripData.value?.speciesList || []).map((species) => [
+        species.code,
+        species.commonName || species.code,
+      ]),
+    );
+    const visitName = visit.name || getVisitName([centerLon, centerLat], radiusKm) || "Visit";
+    const markdown = buildCommentMarkdown({
+      heading: `${visitName} - observer comments`,
+      contextLines: [
+        visit.dateTime ? `Date: ${formatVisitDate(visit.dateTime)}` : "",
+        `Area: ${Math.round(radiusKm * 10) / 10} km around ${centerLat.toFixed(4)}, ${centerLon.toFixed(4)}`,
+        visit.note ? `Visit note: ${visit.note}` : "",
+        "",
+      ],
+      entries,
+      locationsById,
+      speciesNameByCode,
+    });
+
+    if (mode === "copy") {
+      const copied = await copyMarkdown(markdown);
+      flashCommentFeedback(copied ? "copied" : "copy-failed");
+      return;
+    }
+    const safeName = visitName.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "") || "visit";
+    downloadMarkdown(`comments-${safeName.toLowerCase()}.md`, markdown);
+    flashCommentFeedback("downloaded");
+  } finally {
+    isExportingComments.value = false;
+  }
+};
 
 const buildVisitStats = (visit) => {
   const effort = Math.max(0, toNumber(visit?.durationMin, 1));
@@ -2249,6 +2320,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  clearTimeout(commentFeedbackTimer);
   visitStatsTimers.forEach((timer) => clearTimeout(timer));
   visitStatsTimers.clear();
   if (searchHighlightTimer) {
@@ -2543,6 +2615,44 @@ onBeforeUnmount(() => {
                   <template v-if="selectedVisitStats.medianDurationLabel">
                     · duration: {{ selectedVisitStats.medianDurationLabel }}
                   </template>
+                </div>
+                <div class="mt-2" v-if="visitForm.type === 'birding'">
+                  <label class="form-label">Observer comments</label>
+                  <div class="text-muted small mb-2">
+                    Every note written on checklists in this area.
+                  </div>
+                  <div class="d-flex gap-2">
+                    <button
+                      class="btn btn-outline-secondary btn-sm flex-fill"
+                      type="button"
+                      @click="exportVisitComments('copy')"
+                      :disabled="isExportingComments"
+                    >
+                      <i
+                        class="bi me-1"
+                        :class="commentExportDone === 'copied' ? 'bi-check-lg' : 'bi-clipboard'"
+                      ></i>
+                      {{
+                        commentExportDone === "copied"
+                          ? "Copied"
+                          : commentExportDone === "copy-failed"
+                            ? "Copy failed"
+                            : "Copy"
+                      }}
+                    </button>
+                    <button
+                      class="btn btn-outline-secondary btn-sm flex-fill"
+                      type="button"
+                      @click="exportVisitComments('download')"
+                      :disabled="isExportingComments"
+                    >
+                      <i
+                        class="bi me-1"
+                        :class="commentExportDone === 'downloaded' ? 'bi-check-lg' : 'bi-filetype-md'"
+                      ></i>
+                      {{ commentExportDone === "downloaded" ? "Downloaded" : "Download" }}
+                    </button>
+                  </div>
                 </div>
               </div>
             </transition>

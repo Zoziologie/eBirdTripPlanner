@@ -1,6 +1,12 @@
 <script setup>
 import { ref, shallowRef, onMounted, onBeforeUnmount, watch, computed } from "vue";
-import { db, deleteTripChecklists, storeTripChecklists } from "../data/db";
+import {
+  db,
+  deleteTripChecklists,
+  deleteTripComments,
+  storeTripChecklists,
+  storeTripComments,
+} from "../data/db";
 import Initiate from "../components/Initiate.vue";
 import LifeList from "../components/LifeList.vue";
 import { useTripBundleLoader } from "../composables/useTripBundleLoader";
@@ -151,6 +157,7 @@ const createTripFromProcessed = async (payload) => {
     updatedAt: now,
   });
   await storeTripChecklists(id, payload?.checklists);
+  await storeTripComments(id, payload?.comments);
   bumpEbdUpdatedAt();
   await loadTrips();
   selectedTripId.value = id;
@@ -402,6 +409,7 @@ const deleteTrip = async () => {
   await db.ebd.where("tripId").equals(tripId).delete();
   await db.visits.where("tripId").equals(tripId).delete();
   await deleteTripChecklists(tripId);
+  await deleteTripComments(tripId);
   bumpEbdUpdatedAt();
   resetLocalState();
   await loadTrips();
@@ -734,17 +742,19 @@ const exportTrip = async () => {
     const ebd = await db.ebd.where("tripId").equals(selectedTripId.value).first();
     const visits = await db.visits.where("tripId").equals(selectedTripId.value).toArray();
     const lists = await db.lists.where("tripId").equals(selectedTripId.value).toArray();
-    // Checklists live in their own table; carry them along so an
+    // Checklists and comments live in their own tables; carry them along so an
     // export still round-trips into a complete trip.
     const checklists = await db.checklists.where("tripId").equals(selectedTripId.value).toArray();
+    const comments = await db.comments.get(selectedTripId.value);
     const payload = {
-      version: 2,
+      version: 3,
       exportedAt: new Date().toISOString(),
       trip,
       ebd,
       visits,
       lists,
       checklists,
+      comments: comments?.entries || [],
     };
     const blob = new Blob([JSON.stringify(payload)], {
       type: "application/json",
@@ -835,7 +845,7 @@ const importTrip = async (event) => {
       event.target.value = "";
       return;
     }
-    const tables = [db.trips, db.ebd, db.visits, db.lists, db.checklists];
+    const tables = [db.trips, db.ebd, db.visits, db.lists, db.checklists, db.comments];
     await db.transaction("rw", tables, async () => {
       await db.trips.put(parsed.trip);
 
@@ -864,6 +874,11 @@ const importTrip = async (event) => {
             checklist: entry.checklist || [],
           })),
         );
+      }
+
+      await db.comments.delete(tripId);
+      if (Array.isArray(parsed.comments) && parsed.comments.length > 0) {
+        await db.comments.put({ tripId, entries: parsed.comments });
       }
     });
     bumpEbdUpdatedAt();

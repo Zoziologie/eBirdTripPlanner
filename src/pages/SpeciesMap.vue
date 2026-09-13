@@ -6,7 +6,8 @@ import { clustersDbscan } from "@turf/clusters-dbscan";
 import { featureCollection, point } from "@turf/helpers";
 import vSelect from "vue-select";
 import "vue-select/dist/vue-select.css";
-import { readLocationChecklists } from "../data/db";
+import { readLocationChecklists, readTripComments } from "../data/db";
+import { buildCommentMarkdown, copyMarkdown, downloadMarkdown } from "../utils/commentExport";
 import { useTripBundleLoader } from "../composables/useTripBundleLoader";
 import { trips, selectedTripId, refreshTrips } from "../state/tripSelection";
 import { ebdUpdatedAt } from "../state/ebdUpdates";
@@ -265,6 +266,63 @@ const exportKml = async () => {
   anchor.download = `species-${selectedCode}-locations.kml`;
   anchor.click();
   URL.revokeObjectURL(url);
+};
+
+// Every note written about the selected species, anywhere in the trip. Reads the
+// comment corpus rather than the checklists table: a widespread species spans
+// thousands of localities, and that table is 100+ MB.
+const isExportingComments = ref(false);
+// Confirmation lives on the button itself and clears itself: "" | "copied" |
+// "copy-failed" | "downloaded".
+const commentExportDone = ref("");
+let commentFeedbackTimer = null;
+const flashCommentFeedback = (state) => {
+  commentExportDone.value = state;
+  clearTimeout(commentFeedbackTimer);
+  commentFeedbackTimer = setTimeout(() => {
+    commentExportDone.value = "";
+  }, 2500);
+};
+
+const exportSpeciesComments = async (mode) => {
+  const selectedCode = selectedSpeciesCode.value;
+  if (!selectedCode) return;
+  isExportingComments.value = true;
+  try {
+    const entries = await readTripComments(selectedTripId.value);
+    const relevant = entries.filter((entry) =>
+      (entry.species_comments || []).some(([code, text]) => code === selectedCode && text),
+    );
+    const locationsById = new Map(
+      locations.value.map((location) => [String(location.locality_id), location]),
+    );
+    const speciesNameByCode = new Map(
+      speciesList.value.map((species) => [species.code, species.commonName || species.code]),
+    );
+    const label = selectedSpeciesLabel.value || selectedCode;
+    const markdown = buildCommentMarkdown({
+      heading: `${label} - observer comments`,
+      contextLines: [
+        `Trip: ${tripData.value?.region?.name || "eBird trip"}`,
+        `Species: ${label} (${selectedCode})`,
+        "",
+      ],
+      entries: relevant,
+      locationsById,
+      speciesNameByCode,
+      onlySpeciesCode: selectedCode,
+    });
+
+    if (mode === "copy") {
+      const copied = await copyMarkdown(markdown);
+      flashCommentFeedback(copied ? "copied" : "copy-failed");
+      return;
+    }
+    downloadMarkdown(`comments-${selectedCode}.md`, markdown);
+    flashCommentFeedback("downloaded");
+  } finally {
+    isExportingComments.value = false;
+  }
 };
 
 const formatChecklistLabel = (count) => {
@@ -953,6 +1011,40 @@ onMounted(async () => {
                 <i class="bi bi-download me-1"></i>
                 Export KML
               </button>
+              <div class="fw-semibold small mb-1 mt-3">Observer comments</div>
+              <div class="text-muted small mb-2">
+                Every note written about this species across the trip.
+              </div>
+              <div class="d-flex gap-2">
+                <button
+                  class="btn btn-outline-secondary flex-fill"
+                  @click="exportSpeciesComments('copy')"
+                  :disabled="isExportingComments"
+                >
+                  <i
+                    class="bi me-1"
+                    :class="commentExportDone === 'copied' ? 'bi-check-lg' : 'bi-clipboard'"
+                  ></i>
+                  {{
+                    commentExportDone === "copied"
+                      ? "Copied"
+                      : commentExportDone === "copy-failed"
+                        ? "Copy failed"
+                        : "Copy"
+                  }}
+                </button>
+                <button
+                  class="btn btn-outline-secondary flex-fill"
+                  @click="exportSpeciesComments('download')"
+                  :disabled="isExportingComments"
+                >
+                  <i
+                    class="bi me-1"
+                    :class="commentExportDone === 'downloaded' ? 'bi-check-lg' : 'bi-filetype-md'"
+                  ></i>
+                  {{ commentExportDone === "downloaded" ? "Downloaded" : "Download" }}
+                </button>
+              </div>
             </div>
             <div class="trip-summary text-muted small mt-2" v-if="tripData">
               {{ speciesCount }} species · {{ checklistCount }} checklists ·

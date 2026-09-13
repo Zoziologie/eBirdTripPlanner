@@ -565,10 +565,31 @@ export default {
         delete location.checklist;
       }
 
+      // The comment corpus is built from the filtered checklists rather than from
+      // the locations, so notes on incomplete checklists survive: they are left
+      // out of every statistic on purpose, but "what is birding here like" is
+      // exactly the question they answer.
+      const commentEntries = [];
+      for (const checklist of checklists.value) {
+        const speciesComments = checklist.species_comments || [];
+        const checklistComment = checklist.checklist_comment || "";
+        if (!checklistComment && !speciesComments.length) continue;
+        commentEntries.push({
+          checklist_id: checklist.checklist_id,
+          locality_id: checklist.location?.locality_id || "",
+          date: checklist.date || "",
+          time: checklist.time || "",
+          duration_minutes: checklist.duration_minutes,
+          checklist_comment: checklistComment,
+          species_comments: speciesComments,
+        });
+      }
+
       const payload = {
         speciesList: speciesList.value.map((species) => ({ ...species })),
         locations: preparedLocations,
         checklists: checklistsByLocation,
+        comments: commentEntries,
         region,
         filters: buildSerializableFilters(),
       };

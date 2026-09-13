@@ -179,9 +179,9 @@ const createSyntheticEbd = async () => {
           "1",
           "0",
           "",
-          "",
-          // A comment that opens with a double quote: default CSV quoting would
-          // swallow every row that follows it.
+          // Checklist and species comments, including one that opens with a double
+          // quote: default CSV quoting would swallow every row that follows it.
+          checklist % 7 === 0 ? `Gate closed before 07:00 on visit ${checklist}.` : "",
           index === 2 && checklist % 9 === 0
             ? '"Wheezy" two-note call, recorded.'
             : index % 5 === 0
@@ -213,6 +213,12 @@ const showAllSpeciesRows = async (page) => {
     input.dispatchEvent(new Event("change", { bubbles: true }));
   });
   await page.locator("tbody tr.species-row").first().waitFor({ state: "visible" });
+};
+
+// Most rows are milliseconds; a couple are not.
+const unitFor = (key) => {
+  if (key.includes("heap")) return " MB";
+  return key.endsWith("Ms") ? " ms" : "";
 };
 
 const assertThreshold = (results, failures, key, actual) => {
@@ -278,6 +284,30 @@ try {
   });
   assertThreshold(rows, failures, "createTripMs", createTrip.ms);
 
+  // Correctness, not speed: the comment corpus must exist, and a comment that
+  // opens with a double quote must survive the parser intact.
+  const corpus = await page.evaluate(async () => {
+    const open = indexedDB.open("ebirdTripPlanner_v1");
+    const db = await new Promise((resolve) => {
+      open.onsuccess = () => resolve(open.result);
+    });
+    const stored = await new Promise((resolve) => {
+      const request = db.transaction("comments").objectStore("comments").getAll();
+      request.onsuccess = () => resolve(request.result);
+    });
+    const entries = stored[0]?.entries || [];
+    return {
+      entries: entries.length,
+      checklistNotes: entries.filter((entry) => entry.checklist_comment).length,
+      quoted: entries.some((entry) =>
+        (entry.species_comments || []).some(([, text]) => text === '"Wheezy" two-note call, recorded.'),
+      ),
+    };
+  });
+  if (!corpus.entries || !corpus.checklistNotes || !corpus.quoted) {
+    failures.push(`comment corpus wrong: ${JSON.stringify(corpus)}`);
+  }
+  rows.push({ key: "commentEntries", actual: corpus.entries, limit: "> 0", ok: corpus.entries > 0 });
 
   const heapBefore = await getHeapMb(page, cdpSession);
 
@@ -311,8 +341,8 @@ try {
   console.table(
     rows.map((row) => ({
       metric: row.key,
-      actual: row.key.includes("heap") ? `${row.actual} MB` : `${row.actual} ms`,
-      limit: row.key.includes("heap") ? `${row.limit} MB` : `${row.limit} ms`,
+      actual: `${row.actual}${unitFor(row.key)}`,
+      limit: `${row.limit}${unitFor(row.key)}`,
       ok: row.ok,
     })),
   );
