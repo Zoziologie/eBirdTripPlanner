@@ -1,5 +1,5 @@
 <script setup>
-import { ref, shallowRef, computed, onMounted, watch, nextTick } from "vue";
+import { ref, shallowRef, computed, onMounted, onBeforeUnmount, watch, nextTick } from "vue";
 import mapboxgl from "mapbox-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
 import { clustersDbscan } from "@turf/clusters-dbscan";
@@ -11,6 +11,7 @@ import { buildCommentMarkdown, copyMarkdown, downloadMarkdown } from "../utils/c
 import { useTripBundleLoader } from "../composables/useTripBundleLoader";
 import { trips, selectedTripId, refreshTrips } from "../state/tripSelection";
 import { ebdUpdatedAt } from "../state/ebdUpdates";
+import { MapStyleControl } from "../utils/mapStyleControl";
 
 const tripData = shallowRef(null);
 
@@ -36,15 +37,8 @@ let map = null;
 let mapLoaded = false;
 let popup = null;
 let geolocateControl = null;
+let mapStyleControl = null;
 const mapStyle = ref("mapbox://styles/mapbox/outdoors-v12");
-const isSatellite = computed({
-  get: () => mapStyle.value === "mapbox://styles/mapbox/satellite-streets-v12",
-  set: (value) => {
-    mapStyle.value = value
-      ? "mapbox://styles/mapbox/satellite-streets-v12"
-      : "mapbox://styles/mapbox/outdoors-v12";
-  },
-});
 const { loadTripBundle, resetTripBundleLoader } = useTripBundleLoader({ includeEbd: true });
 
 mapboxgl.accessToken = "pk.eyJ1IjoicmFmbnVzcyIsImEiOiIzMVE1dnc0In0.3FNMKIlQ_afYktqki-6m0g";
@@ -727,6 +721,13 @@ const initMap = () => {
   });
 
   map.addControl(new mapboxgl.NavigationControl());
+  mapStyleControl = new MapStyleControl({
+    initialStyle: mapStyle.value,
+    onStyleChange: (style) => {
+      mapStyle.value = style;
+    },
+  });
+  map.addControl(mapStyleControl, "top-right");
   geolocateControl = new mapboxgl.GeolocateControl({
     positionOptions: { enableHighAccuracy: true },
     trackUserLocation: false,
@@ -846,6 +847,7 @@ watch(hasTripData, (ready) => {
   }
 });
 watch(mapStyle, (style) => {
+  mapStyleControl?.setStyle(style);
   if (!map) return;
   const currentCenter = map.getCenter();
   const currentZoom = map.getZoom();
@@ -861,6 +863,10 @@ watch(mapStyle, (style) => {
 onMounted(async () => {
   await refreshTrips();
   nextTick(initMap);
+});
+
+onBeforeUnmount(() => {
+  if (map && mapStyleControl) map.removeControl(mapStyleControl);
 });
 </script>
 
@@ -894,17 +900,6 @@ onMounted(async () => {
             <div class="d-flex align-items-center justify-content-between mb-1 gap-2">
               <div class="fw-semibold">Species map</div>
               <div class="d-flex align-items-center gap-2">
-                <div class="form-check form-switch mb-0">
-                  <input
-                    id="satelliteToggleSpecies"
-                    class="form-check-input"
-                    type="checkbox"
-                    v-model="isSatellite"
-                  />
-                  <label class="form-check-label small" for="satelliteToggleSpecies"
-                    >Hybrid map</label
-                  >
-                </div>
                 <button
                   class="btn btn-sm btn-outline-secondary d-sm-none"
                   type="button"
@@ -1154,6 +1149,21 @@ onMounted(async () => {
 
 :deep(.mapboxgl-popup) {
   pointer-events: auto;
+}
+
+:deep(.map-style-control) {
+  position: relative;
+}
+
+:deep(.map-style-control__toggle) {
+  font-size: 1.05rem;
+}
+
+@media (max-width: 576px) {
+  :deep(.map-style-control__toggle) {
+    width: 40px;
+    height: 40px;
+  }
 }
 
 .species-popup :deep(.badge) {

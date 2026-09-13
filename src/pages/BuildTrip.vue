@@ -15,6 +15,7 @@ import { buildCommentMarkdown, copyMarkdown, downloadMarkdown } from "../utils/c
 import { selectedTripId, refreshTrips } from "../state/tripSelection";
 import { selectedVisitId } from "../state/visitSelection";
 import { resolveRecordConflict, withUpdatedAt } from "../utils/recordConflicts";
+import { MapStyleControl } from "../utils/mapStyleControl";
 
 const tripData = shallowRef(null);
 const locations = shallowRef([]);
@@ -64,15 +65,8 @@ const isMobilePanelOpen = ref(false);
 const itinerarySplitPercent = ref(60);
 const isDraggingSplit = ref(false);
 let geolocateControl = null;
+let mapStyleControl = null;
 const searchHighlightCoords = ref(null);
-const isSatellite = computed({
-  get: () => mapStyle.value === "mapbox://styles/mapbox/satellite-streets-v12",
-  set: (value) => {
-    mapStyle.value = value
-      ? "mapbox://styles/mapbox/satellite-streets-v12"
-      : "mapbox://styles/mapbox/outdoors-v12";
-  },
-});
 const { loadTripBundle, resetTripBundleLoader } = useTripBundleLoader({
   includeEbd: true,
   includeVisits: true,
@@ -2239,6 +2233,13 @@ const initMap = () => {
   });
 
   map.addControl(new mapboxgl.NavigationControl());
+  mapStyleControl = new MapStyleControl({
+    initialStyle: mapStyle.value,
+    onStyleChange: (style) => {
+      mapStyle.value = style;
+    },
+  });
+  map.addControl(mapStyleControl, "top-right");
   setupLocationSearch();
   geolocateControl = new mapboxgl.GeolocateControl({
     positionOptions: { enableHighAccuracy: true },
@@ -2288,6 +2289,7 @@ watch(visits, () => {
   updateVisitMarkers();
 });
 watch(mapStyle, (style) => {
+  mapStyleControl?.setStyle(style);
   if (!map) return;
   const currentCenter = map.getCenter();
   const currentZoom = map.getZoom();
@@ -2328,6 +2330,7 @@ onBeforeUnmount(() => {
     searchHighlightTimer = null;
   }
   teardownLocationSearch();
+  if (map && mapStyleControl) map.removeControl(mapStyleControl);
   saveMapState();
   window.removeEventListener("keydown", handleKeydown);
 });
@@ -2348,15 +2351,6 @@ onBeforeUnmount(() => {
           >
             <div class="fw-semibold">Itinerary</div>
             <div class="d-flex align-items-center gap-2">
-              <div class="form-check form-switch mb-0">
-                <input
-                  id="satelliteToggleBuild"
-                  class="form-check-input"
-                  type="checkbox"
-                  v-model="isSatellite"
-                />
-                <label class="form-check-label small" for="satelliteToggleBuild">Hybrid map</label>
-              </div>
               <button
                 class="btn btn-outline-primary btn-sm"
                 @click="startAddVisit"
@@ -2728,6 +2722,21 @@ onBeforeUnmount(() => {
 .build-trip-search-overlay :deep(.mapboxgl-ctrl-geocoder--input) {
   height: 46px;
   font-size: 0.95rem;
+}
+
+:deep(.map-style-control) {
+  position: relative;
+}
+
+:deep(.map-style-control__toggle) {
+  font-size: 1.05rem;
+}
+
+@media (max-width: 576px) {
+  :deep(.map-style-control__toggle) {
+    width: 40px;
+    height: 40px;
+  }
 }
 
 .visit-type-marker {
