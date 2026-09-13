@@ -16,21 +16,27 @@
         class="form-control"
         :disabled="disabled"
       />
-      <!-- File Reading Progress -->
-      <div v-if="readingFileProgress > 0" class="mt-2">
-        <!-- Progress bar -->
-        <div class="progress" v-if="readingFileProgress > 1">
-          <div class="progress-bar" role="progressbar" :style="{ width: readingFileProgress + '%' }">
-            {{ Math.round(readingFileProgress) }}%
+      <div v-if="isImporting" class="mt-2">
+        <div v-if="importPhase === 'Reading data'" class="progress">
+          <div
+            class="progress-bar"
+            role="progressbar"
+            :aria-valuenow="Math.floor(readingFileProgress)"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            :style="{ width: readingFileProgress + '%' }"
+          >
+            {{ Math.floor(readingFileProgress) }}% read
           </div>
         </div>
-        <small class="text-muted">
-          <span
-            v-if="readingFileStatus && readingFileStatus.startsWith('<span')"
-            v-html="readingFileStatus"
-          ></span>
-          <span v-else>{{ readingFileStatus }}</span>
-        </small>
+        <div v-else class="d-flex align-items-center gap-2 small text-muted">
+          <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+          {{ importPhase }}
+        </div>
+        <div class="d-flex justify-content-between small text-muted mt-1">
+          <span>{{ readingFileStatus }}</span>
+          <span>{{ importElapsed }}</span>
+        </div>
       </div>
 
       <!-- Success message - only after raw data is loaded -->
@@ -169,13 +175,38 @@
     <div class="col">
       <div :class="['alert', isProcessing ? 'alert-info' : 'alert-success', 'py-2', 'mb-0']">
         {{ saveStatus }}
+        <template v-if="isProcessing">
+          <div v-if="processingTotal > 0" class="progress mt-2">
+            <div
+              class="progress-bar"
+              role="progressbar"
+              :aria-valuenow="Math.floor(processingProgress)"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              :style="{ width: processingProgress + '%' }"
+            >
+              {{ Math.floor(processingProgress) }}%
+            </div>
+          </div>
+          <div class="d-flex justify-content-between small mt-1">
+            <span v-if="processingTotal > 0">
+              {{ processingCompleted.toLocaleString() }} of {{ processingTotal.toLocaleString() }}
+              {{ processingUnit }}
+            </span>
+            <span v-else class="d-flex align-items-center gap-2">
+              <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+              Finalizing trip
+            </span>
+            <span>{{ processingElapsed }}</span>
+          </div>
+        </template>
       </div>
     </div>
   </div>
 </template>
 
 <script>
-import { ref, reactive, shallowRef } from "vue";
+import { nextTick, onBeforeUnmount, ref, reactive, shallowRef } from "vue";
 import Papa from "papaparse";
 import JSZip from "jszip";
 import {
@@ -206,12 +237,20 @@ export default {
     // File reading state
     const readingFileProgress = ref(0);
     const readingFileStatus = ref("");
+    const isImporting = ref(false);
+    const importPhase = ref("");
+    const importElapsed = ref("0:00");
     const hasError = ref(false);
     const loadedRecordCount = ref(0);
     const loadedChecklists = shallowRef([]);
 
     // Checklists
     const isProcessing = ref(false);
+    const processingProgress = ref(0);
+    const processingCompleted = ref(0);
+    const processingTotal = ref(0);
+    const processingUnit = ref("checklists");
+    const processingElapsed = ref("0:00");
     const checklists = shallowRef([]);
     const locations = shallowRef([]);
     const speciesList = shallowRef([]);
@@ -244,6 +283,34 @@ export default {
       state: [],
       county: [],
     });
+
+    let operationStartedAt = 0;
+    let elapsedTimer = null;
+
+    const formatElapsed = (milliseconds) => {
+      const totalSeconds = Math.floor(milliseconds / 1000);
+      const minutes = Math.floor(totalSeconds / 60);
+      return `${minutes}:${String(totalSeconds % 60).padStart(2, "0")}`;
+    };
+
+    const startElapsedTimer = (target) => {
+      operationStartedAt = performance.now();
+      target.value = "0:00";
+      elapsedTimer = window.setInterval(() => {
+        target.value = formatElapsed(performance.now() - operationStartedAt);
+      }, 250);
+    };
+
+    const stopElapsedTimer = (target) => {
+      target.value = formatElapsed(performance.now() - operationStartedAt);
+      window.clearInterval(elapsedTimer);
+      elapsedTimer = null;
+      return target.value;
+    };
+
+    onBeforeUnmount(() => window.clearInterval(elapsedTimer));
+
+    const yieldToBrowser = () => new Promise((resolve) => window.setTimeout(resolve, 0));
 
     const clearLoadedResults = () => {
       loadedRecordCount.value = 0;
@@ -322,27 +389,36 @@ export default {
 
       clearLoadedResults();
       saveStatus.value = "";
-      readingFileProgress.value = 1;
+      isImporting.value = true;
+      importPhase.value = "Opening files";
+      readingFileProgress.value = 0;
       readingFileStatus.value = "Starting file reading...";
       hasError.value = false;
+      startElapsedTimer(importElapsed);
 
       const accumulator = createEbdImportAccumulator(taxonomy_sci, taxonomy_code);
       const files = uploadedFiles.value;
+      const totalBytes = files.reduce((total, file) => total + file.size, 0);
+      let completedBytes = 0;
 
       try {
         for (const [index, file] of files.entries()) {
           const updateProgress = (fileProgress) => {
-            readingFileProgress.value = ((index + fileProgress) / files.length) * 100;
+            readingFileProgress.value =
+              ((completedBytes + Math.min(Math.max(fileProgress, 0), 1) * file.size) / totalBytes) * 100;
             readingFileStatus.value =
               `Reading file ${index + 1} of ${files.length} ` +
-              `(${accumulator.recordCount.toLocaleString()} records retained)`;
+              `(${accumulator.recordCount.toLocaleString()} non-zero records read)`;
           };
 
           if (file.name.toLowerCase().endsWith(".txt")) {
+            importPhase.value = "Reading data";
             await parseTextFile(file, accumulator, updateProgress);
+            completedBytes += file.size;
             continue;
           }
 
+          importPhase.value = "Opening files";
           readingFileStatus.value = `Opening ZIP ${index + 1} of ${files.length}...`;
           const zip = await JSZip.loadAsync(file);
           const largestTxtFile = Object.values(zip.files).reduce((largest, entry) => {
@@ -353,16 +429,27 @@ export default {
           }, null);
           if (!largestTxtFile) throw new Error(`No .txt file found in ${file.name}.`);
 
+          importPhase.value = "Reading data";
           await streamEbdZipEntry(largestTxtFile, accumulator, (progress) => {
             updateProgress(progress / 100);
           });
+          completedBytes += file.size;
         }
 
         readingFileProgress.value = 100;
+        importPhase.value = "Finalizing data";
         readingFileStatus.value = "Finalizing data...";
+        await nextTick();
+        await new Promise((resolve) => window.requestAnimationFrame(resolve));
         finalizeImport(accumulator);
+        const elapsed = stopElapsedTimer(importElapsed);
+        readingFileStatus.value = `${readingFileStatus.value} Imported in ${elapsed}.`;
+        isImporting.value = false;
       } catch (error) {
         console.error("File reading error:", error);
+        stopElapsedTimer(importElapsed);
+        isImporting.value = false;
+        importPhase.value = "";
         readingFileProgress.value = 0;
         readingFileStatus.value = error?.message || "Error occurred while reading the files";
         hasError.value = true;
@@ -372,18 +459,30 @@ export default {
       }
     };
 
-    const processChecklists = () => {
+    const updateProcessingProgress = (completed, total, unit) => {
+      processingCompleted.value = completed;
+      processingTotal.value = total;
+      processingUnit.value = unit;
+      processingProgress.value = total ? (completed / total) * 100 : 100;
+    };
+
+    const processChecklists = async () => {
       if (loadedChecklists.value.length === 0) return;
 
       isProcessing.value = true;
+      startElapsedTimer(processingElapsed);
       saveStatus.value = "Filtering checklists...";
       locations.value = [];
       speciesList.value = [];
+      const filteredChecklists = [];
+      const sourceChecklists = loadedChecklists.value;
+      const chunkSize = 1000;
+      updateProcessingProgress(0, sourceChecklists.length, "checklists");
 
-      setTimeout(() => {
-        const filteredChecklists = [];
-
-        for (const checklist of loadedChecklists.value) {
+      for (let start = 0; start < sourceChecklists.length; start += chunkSize) {
+        const end = Math.min(start + chunkSize, sourceChecklists.length);
+        for (let index = start; index < end; index += 1) {
+          const checklist = sourceChecklists[index];
           const rowDate = new Date(checklist.date);
           const rowYear = rowDate.getFullYear();
           const rowMonth = rowDate.getMonth() + 1;
@@ -406,19 +505,26 @@ export default {
 
           filteredChecklists.push(checklist);
         }
+        updateProcessingProgress(end, sourceChecklists.length, "checklists");
+        await yieldToBrowser();
+      }
 
-        checklists.value = filteredChecklists;
-        saveStatus.value = "Filtering locations...";
-        processLocations();
-      }, 100);
+      checklists.value = filteredChecklists;
+      await processLocations();
     };
 
-    const processLocations = () => {
-      setTimeout(() => {
-        const locationMap = new Map();
+    const processLocations = async () => {
+      saveStatus.value = "Building locations...";
+      const locationMap = new Map();
+      const sourceChecklists = checklists.value;
+      const chunkSize = 1000;
+      updateProcessingProgress(0, sourceChecklists.length, "checklists");
 
-        checklists.value.forEach((checklist) => {
-          if (!checklist.location) return;
+      for (let start = 0; start < sourceChecklists.length; start += chunkSize) {
+        const end = Math.min(start + chunkSize, sourceChecklists.length);
+        for (let index = start; index < end; index += 1) {
+          const checklist = sourceChecklists[index];
+          if (!checklist.location) continue;
           const localityId = checklist.location.locality_id;
 
           let location = locationMap.get(localityId);
@@ -473,39 +579,50 @@ export default {
               species: checklist.species,
             });
           }
-        });
+        }
+        updateProcessingProgress(end, sourceChecklists.length, "checklists");
+        await yieldToBrowser();
+      }
 
-        locations.value = Array.from(locationMap.values());
-        saveStatus.value = "Filtering species...";
-        processSpecies();
-      }, 50);
+      locations.value = Array.from(locationMap.values());
+      await processSpecies();
     };
 
-    const processSpecies = () => {
-      setTimeout(() => {
-        const speciesSet = new Set();
+    const processSpecies = async () => {
+      saveStatus.value = "Building species list...";
+      const speciesSet = new Set();
+      const sourceLocations = locations.value;
+      const chunkSize = 1000;
+      updateProcessingProgress(0, sourceLocations.length, "locations");
 
-        locations.value.forEach((location) => {
+      for (let start = 0; start < sourceLocations.length; start += chunkSize) {
+        const end = Math.min(start + chunkSize, sourceLocations.length);
+        for (let index = start; index < end; index += 1) {
+          const location = sourceLocations[index];
           for (const code of location.speciesChecklistCounts.keys()) {
             speciesSet.add(code);
           }
-        });
+        }
+        updateProcessingProgress(end, sourceLocations.length, "locations");
+        await yieldToBrowser();
+      }
 
-        speciesList.value = Array.from(speciesSet)
-          .map((code) => {
-            const taxInfo = taxonomy_code[code];
-            return {
-              code: code,
-              taxonOrder: taxInfo?.taxonOrder || Infinity,
-              commonName: taxInfo?.comName || code,
-              scientificName: taxInfo?.sciName || "",
-            };
-          })
-          .sort((a, b) => a.taxonOrder - b.taxonOrder);
+      speciesList.value = Array.from(speciesSet)
+        .map((code) => {
+          const taxInfo = taxonomy_code[code];
+          return {
+            code: code,
+            taxonOrder: taxInfo?.taxonOrder || Infinity,
+            commonName: taxInfo?.comName || code,
+            scientificName: taxInfo?.sciName || "",
+          };
+        })
+        .sort((a, b) => a.taxonOrder - b.taxonOrder);
 
-        saveStatus.value = "Finalizing results...";
-        processDone();
-      }, 50);
+      saveStatus.value = "Finalizing results...";
+      processingTotal.value = 0;
+      await yieldToBrowser();
+      processDone();
     };
 
     const buildSerializableFilters = () => ({
@@ -597,6 +714,7 @@ export default {
       emit("processed", payload);
       readingFileStatus.value = "Trip created. Import data cleared from memory.";
       saveStatus.value = "";
+      stopElapsedTimer(processingElapsed);
       isProcessing.value = false;
     };
 
@@ -605,10 +723,18 @@ export default {
       fileInput,
       readingFileProgress,
       readingFileStatus,
+      isImporting,
+      importPhase,
+      importElapsed,
       hasError,
       checklists,
       loadedRecordCount,
       isProcessing,
+      processingProgress,
+      processingCompleted,
+      processingTotal,
+      processingUnit,
+      processingElapsed,
       handleFileUpload,
       readFiles,
       processChecklists,
