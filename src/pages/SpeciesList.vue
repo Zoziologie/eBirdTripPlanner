@@ -361,7 +361,10 @@ const selectedLocationVisit = computed(() => {
   );
 });
 
-const visitSelectOptions = computed(() => visitOptions.value);
+const visitSelectOptions = computed(() => [
+  { id: "", label: "All locations (full trip)" },
+  ...visitOptions.value,
+]);
 
 const targetSpeciesSet = computed(() => {
   const target = selectedLocationVisit.value?.targetSpecies;
