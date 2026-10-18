@@ -4,7 +4,7 @@ Plan birding trips from the eBird Basic Dataset (EBD) with an offline-friendly, 
 
 ## Main Flow
 
-1. Download one or more eBird Basic Dataset (EBD) files and upload the `.zip`/`.txt` files together in **Create Trip**.
+1. Download one or more eBird Basic Dataset (EBD) files and upload the `.zip`/`.txt` files together under **Trips → Create from eBird data**.
 2. Filter checklists by region/date, then process and normalize species + locations locally.
 3. Persist the trip in IndexedDB for fast reloads and offline use.
 4. **Build Trip**: plan visits on a map, adjust radius, and track per‑visit stats.
@@ -96,3 +96,7 @@ Plan birding trips from the eBird Basic Dataset (EBD) with an offline-friendly, 
 </table>
 
 Additional tools: [Vue Router](https://router.vuejs.org/), [PapaParse](https://www.papaparse.com/), [JSZip](https://stuk.github.io/jszip/), [Bootstrap Icons](https://github.com/twbs/icons), [Vite PWA](https://github.com/vite-pwa/vite-plugin-pwa).
+
+## Firebase cloud storage
+
+Persistent Google sign-in, manual cloud saving, and viewing/editing links are available when Firebase web settings are configured. Any Google account can save one compressed cloud trip up to 50 MiB, and request additional capacity for administrator approval. Free storage has no long-term retention guarantee; trips inactive for over six months may be deleted. Setup, access rules, billing caveats and testing are described in [docs/firebase-cloud.md](docs/firebase-cloud.md).

@@ -1,5 +1,6 @@
 <script setup>
 import { ref, shallowRef, onMounted, onBeforeUnmount, watch, computed } from "vue";
+import { liveQuery } from "dexie";
 import {
   db,
   deleteTripChecklists,
@@ -14,7 +15,11 @@ import { trips, selectedTripId, refreshTrips } from "../state/tripSelection";
 import { bumpEbdUpdatedAt } from "../state/ebdUpdates";
 import { resolveRecordConflict, withUpdatedAt } from "../utils/recordConflicts";
 import { resolveSpeciesTaxon, extractTaxonFields } from "../utils/taxonomy";
-import { EMPTY_REGION } from "../utils/tripData";
+import { EMPTY_REGION, readTripArchive, restoreTripArchive } from "../utils/tripData";
+import { encodeTripArchive, decodeTripArchive, tripArchiveName } from "../utils/tripArchive";
+import CloudTrips from "../components/CloudTrips.vue";
+import { cloudBindings, cloudLibrary } from "../state/cloudTrips";
+import { findTripByName, uniqueTripName } from "../utils/tripNames";
 import zoziologieLogoUrl from "../assets/zoziologie-logo.svg";
 
 const tripForm = ref({
@@ -23,6 +28,39 @@ const tripForm = ref({
 });
 
 const processedData = shallowRef(null);
+const tripEditTimes = ref({});
+const tripVisitCounts = ref({});
+const addTripMode = ref("");
+const isCreating = ref(false);
+const newTripName = ref("");
+const libraryNames = computed(() => [...trips.value, ...cloudLibrary.value.filter(trip => trip.revision)]);
+const hasNewTripName = computed(() => Boolean(newTripName.value.trim()));
+const duplicateNewTripName = computed(() => findTripByName(libraryNames.value, newTripName.value));
+const pendingImport = shallowRef(null);
+const importName = ref("");
+const importCollision = computed(() => pendingImport.value && findTripByName(libraryNames.value, pendingImport.value.trip.name));
+const localImportCollision = computed(() => pendingImport.value && findTripByName(trips.value, pendingImport.value.trip.name));
+const duplicateImportName = computed(() => findTripByName(libraryNames.value, importName.value));
+const importProgress = ref(null);
+const importStage = ref("");
+const transferFailed = ref(false);
+const welcome = computed(() => !trips.value.length && !cloudLibrary.value.some(trip => trip.revision));
+watch(addTripMode, mode => {
+  if (mode) transferStatus.value = "";
+  if (mode !== "import") pendingImport.value = null;
+});
+const editTimesSubscription = liveQuery(() => db.transaction("r", db.trips, db.ebd, db.visits, async () => {
+  // Read only the EBD timestamp index, rather than loading the large bird datasets.
+  const [allTrips, ebdIds, ebdTimes, visits] = await Promise.all([
+    db.trips.toArray(), db.ebd.orderBy("updatedAt").primaryKeys(),
+    db.ebd.orderBy("updatedAt").keys(), db.visits.toArray(),
+  ]);
+  const times = Object.fromEntries(allTrips.map(trip => [trip.id, Number(trip.updatedAt || 0)]));
+  ebdIds.forEach((id, index) => { times[id] = Math.max(times[id] || 0, Number(ebdTimes[index])); });
+  visits.forEach(visit => { times[visit.tripId] = Math.max(times[visit.tripId] || 0, Number(visit.updatedAt || 0)); });
+  return { times, counts: visits.reduce((counts, visit) => { counts[visit.tripId] = (counts[visit.tripId] || 0) + 1; return counts; }, {}) };
+})).subscribe(({ times, counts }) => { tripEditTimes.value = times; tripVisitCounts.value = counts; });
+onBeforeUnmount(() => editTimesSubscription.unsubscribe());
 const saveStatus = ref("");
 const loadedTrip = ref(null);
 const isExporting = ref(false);
@@ -114,20 +152,6 @@ const resetLocalState = () => {
   lastTripReportSyncTime.value = null;
 };
 
-const buildUniqueTripName = (baseName) => {
-  const cleanedBase = (baseName || "").trim() || "New trip";
-  if (!trips.value.some((trip) => trip.name?.trim() === cleanedBase)) {
-    return cleanedBase;
-  }
-  let index = 2;
-  let candidate = `${cleanedBase} ${index}`;
-  while (trips.value.some((trip) => trip.name?.trim() === candidate)) {
-    index += 1;
-    candidate = `${cleanedBase} ${index}`;
-  }
-  return candidate;
-};
-
 const cloneTripFilters = (filters) => ({
   minYear: filters?.minYear ?? null,
   maxYear: filters?.maxYear ?? null,
@@ -137,10 +161,10 @@ const cloneTripFilters = (filters) => ({
   county: Array.isArray(filters?.county) ? [...filters.county] : [],
 });
 
-const createTripFromProcessed = async (payload) => {
+const createTripFromProcessed = async (payload, onProgress) => {
   const now = Date.now();
   const id = crypto.randomUUID();
-  const tripName = buildUniqueTripName(payload?.region?.name);
+  const tripName = newTripName.value.trim();
   await db.trips.put({
     id,
     name: tripName,
@@ -148,6 +172,7 @@ const createTripFromProcessed = async (payload) => {
     createdAt: now,
     updatedAt: now,
   });
+  onProgress(1, 5, "save steps");
   await db.ebd.put({
     tripId: id,
     speciesList: payload?.speciesList || [],
@@ -156,18 +181,24 @@ const createTripFromProcessed = async (payload) => {
     filters: cloneTripFilters(payload?.filters),
     updatedAt: now,
   });
+  onProgress(2, 5, "save steps");
   await storeTripChecklists(id, payload?.checklists);
+  onProgress(3, 5, "save steps");
   await storeTripComments(id, payload?.comments);
+  onProgress(4, 5, "save steps");
   bumpEbdUpdatedAt();
   await loadTrips();
   selectedTripId.value = id;
-  setSaveStatus("Trip created.");
+  await loadTripData(id);
+  onProgress(5, 5, "save steps");
+  newTripName.value = "";
+  addTripMode.value = "";
+  setSaveStatus("Trip created in this browser. Save to cloud when ready.");
 };
 
-const handleProcessed = async (payload) => {
-  processedData.value = payload;
+const handleProcessed = async (payload, onProgress) => {
   saveStatus.value = "";
-  await createTripFromProcessed(payload);
+  await createTripFromProcessed(payload, onProgress);
 };
 
 const isRenameModalOpen = ref(false);
@@ -368,10 +399,11 @@ const loadTripData = async (tripId) => {
 };
 
 watch(selectedTripId, loadTripData, { immediate: true });
+watch(selectedTripId, () => { transferStatus.value = ""; });
 
 onMounted(async () => {
-  resetLocalState();
   await loadTrips();
+  await loadTripData(selectedTripId.value);
   window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
   window.addEventListener("appinstalled", handleAppInstalled);
 });
@@ -384,7 +416,7 @@ onBeforeUnmount(() => {
 const deleteTrip = async () => {
   if (!selectedTripId.value) return;
   const tripName = loadedTrip.value?.name || "this trip";
-  const confirmed = window.confirm(`Delete ${tripName}? This cannot be undone.`);
+  const confirmed = window.confirm(`Remove "${tripName}" from this browser? Browser-only edits will be lost. Its cloud trip, if any, will stay available. Download a backup first if needed.`);
   if (!confirmed) return;
   const currentTrip = await db.trips.get(selectedTripId.value);
   if (!currentTrip) {
@@ -406,22 +438,19 @@ const deleteTrip = async () => {
   }
   const tripId = selectedTripId.value;
   await db.trips.delete(tripId);
+  if (cloudBindings.value[tripId]) {
+    cloudBindings.value = Object.fromEntries(Object.entries(cloudBindings.value).filter(([id]) => id !== tripId));
+    localStorage.setItem("firebaseCloudTrips", JSON.stringify(cloudBindings.value));
+  }
   await db.ebd.where("tripId").equals(tripId).delete();
   await db.visits.where("tripId").equals(tripId).delete();
+  await db.lists.where("tripId").equals(tripId).delete();
   await deleteTripChecklists(tripId);
   await deleteTripComments(tripId);
   bumpEbdUpdatedAt();
   resetLocalState();
   await loadTrips();
-  setSaveStatus("Trip deleted.");
-};
-
-const sanitizeFilename = (value) => {
-  const cleaned = (value || "")
-    .trim()
-    .replace(/[^a-z0-9]+/gi, "_")
-    .replace(/^_+|_+$/g, "");
-  return cleaned || "trip";
+  setSaveStatus("Trip removed from this browser.");
 };
 
 const normalizeTripReportId = (value) => (value || "").trim();
@@ -536,11 +565,13 @@ const syncTripReportSpecies = async () => {
   isSyncingTripReport.value = true;
   tripReportStatus.value = "";
   try {
+    tripReportStatus.value = "Downloading trip report species…";
     const response = await fetch(
       "https://tripreport.raphaelnussbaumer.com/tripreport-internal/v1/taxon-list/" + tripReportId,
     );
     if (!response.ok) throw new Error(`Trip report request failed: ${response.status}`);
     const payload = await response.json();
+    tripReportStatus.value = "Matching trip report species…";
     const entries = extractTripReportSpecies(payload);
     const prepared = entries.map((entry) => normalizeTripReportEntry(entry)).filter(Boolean);
     const codeSet = new Set(prepared.map((item) => item.code).filter(Boolean));
@@ -615,6 +646,7 @@ const syncTripReportSpecies = async () => {
       });
     });
 
+    tripReportStatus.value = "Saving trip report species…";
     const syncTimestamp = Date.now();
     const updated = await updateCurrentEbd({
       speciesList: nextList,
@@ -735,270 +767,170 @@ const clearTripReportSync = async () => {
 const exportTrip = async () => {
   if (!selectedTripId.value) return;
   isExporting.value = true;
-  transferStatus.value = "";
+  transferStatus.value = "Preparing backup…";
+  transferFailed.value = false;
   try {
-    const trip = await db.trips.get(selectedTripId.value);
-    if (!trip) throw new Error("Trip not found.");
-    const ebd = await db.ebd.where("tripId").equals(selectedTripId.value).first();
-    const visits = await db.visits.where("tripId").equals(selectedTripId.value).toArray();
-    const lists = await db.lists.where("tripId").equals(selectedTripId.value).toArray();
-    // Checklists and comments live in their own tables; carry them along so an
-    // export still round-trips into a complete trip.
-    const checklists = await db.checklists.where("tripId").equals(selectedTripId.value).toArray();
-    const comments = await db.comments.get(selectedTripId.value);
-    const payload = {
-      version: 3,
-      exportedAt: new Date().toISOString(),
-      trip,
-      ebd,
-      visits,
-      lists,
-      checklists,
-      comments: comments?.entries || [],
-    };
-    const blob = new Blob([JSON.stringify(payload)], {
-      type: "application/json",
-    });
+    const payload = await readTripArchive(selectedTripId.value);
+    const blob = await encodeTripArchive(payload);
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
-    const safeName = sanitizeFilename(trip.name);
     link.href = url;
-    link.download = `ebird-trip-${safeName}.json`;
+    link.download = tripArchiveName(payload.trip.name);
     document.body.appendChild(link);
     link.click();
     link.remove();
     URL.revokeObjectURL(url);
-    transferStatus.value = "Trip exported.";
+    transferStatus.value = "Backup downloaded.";
   } catch (error) {
+    transferFailed.value = true;
     transferStatus.value = `Export failed: ${error.message || error}`;
   } finally {
     isExporting.value = false;
   }
 };
 
-const stripUtf8Bom = (text) => {
-  if (typeof text !== "string") return "";
-  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
-};
-
-const readFileWithFileReader = (file) =>
-  new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
-    reader.onerror = () => reject(reader.error || new Error("FileReader failed"));
-    reader.readAsText(file);
-  });
-
-const readImportedTripFile = async (file) => {
-  const attempts = [];
-
-  if (typeof file?.text === "function") {
-    try {
-      const text = await file.text();
-      if (typeof text === "string" && text.trim()) return stripUtf8Bom(text);
-      attempts.push("empty text() result");
-    } catch (error) {
-      attempts.push(`text() failed: ${error?.message || error}`);
-    }
-  }
-
-  if (typeof file?.arrayBuffer === "function") {
-    try {
-      const buffer = await file.arrayBuffer();
-      const text = new TextDecoder("utf-8").decode(buffer);
-      if (text.trim()) return stripUtf8Bom(text);
-      attempts.push("empty arrayBuffer() decode");
-    } catch (error) {
-      attempts.push(`arrayBuffer() failed: ${error?.message || error}`);
-    }
-  }
-
+const finishImport = async (replace = false) => {
+  const payload = pendingImport.value;
+  const target = replace ? findTripByName(trips.value, payload.trip.name) : null;
+  isImporting.value = true;
+  importStage.value = "Saving trip in this browser";
+  importProgress.value = 0;
+  transferStatus.value = "";
+  transferFailed.value = false;
   try {
-    const text = await readFileWithFileReader(file);
-    if (text.trim()) return stripUtf8Bom(text);
-    attempts.push("empty FileReader result");
+    const tripId = await restoreTripArchive({ ...payload, trip: { ...payload.trip, name: replace ? target.name : importName.value.trim(), updatedAt: Date.now() } }, {
+      asCopy: true, targetTripId: target?.id || "", onProgress: value => { importProgress.value = Math.round(value * 100); },
+    });
+    importStage.value = "Opening trip";
+    importProgress.value = null;
+    bumpEbdUpdatedAt();
+    await loadTrips();
+    selectedTripId.value = tripId;
+    await loadTripData(tripId);
+    pendingImport.value = null;
+    addTripMode.value = "";
+    transferStatus.value = "Trip imported. Save to cloud when ready.";
   } catch (error) {
-    attempts.push(`FileReader failed: ${error?.message || error}`);
+    transferFailed.value = true;
+    transferStatus.value = `Import failed: ${error.message || error}`;
+  } finally {
+    isImporting.value = false;
   }
-
-  throw new Error(
-    `Could not read file content from this provider. ${attempts.join("; ")}. Try downloading locally first.`,
-  );
 };
 
 const importTrip = async (event) => {
   const file = event.target.files[0];
   if (!file) return;
   transferStatus.value = "";
+  transferFailed.value = false;
+  pendingImport.value = null;
   isImporting.value = true;
+  importStage.value = "Reading trip file";
+  importProgress.value = 0;
   try {
-    const contents = await readImportedTripFile(file);
-    const parsed = JSON.parse(contents);
-    if (!parsed || typeof parsed !== "object" || !parsed.trip?.id) {
-      throw new Error("Invalid trip file.");
-    }
-    const tripId = parsed.trip.id;
-    const confirmed = window.confirm(
-      `Import "${parsed.trip.name || "trip"}"? This will overwrite any existing data for it.`,
-    );
-    if (!confirmed) {
-      event.target.value = "";
-      return;
-    }
-    const tables = [db.trips, db.ebd, db.visits, db.lists, db.checklists, db.comments];
-    await db.transaction("rw", tables, async () => {
-      await db.trips.put(parsed.trip);
-
-      if (parsed.ebd) {
-        await db.ebd.put({ ...parsed.ebd, tripId });
-      } else {
-        await db.ebd.where("tripId").equals(tripId).delete();
-      }
-
-      await db.visits.where("tripId").equals(tripId).delete();
-      if (Array.isArray(parsed.visits) && parsed.visits.length > 0) {
-        await db.visits.bulkPut(parsed.visits.map((visit) => ({ ...visit, tripId })));
-      }
-
-      await db.lists.where("tripId").equals(tripId).delete();
-      if (Array.isArray(parsed.lists) && parsed.lists.length > 0) {
-        await db.lists.bulkPut(parsed.lists.map((item) => ({ ...item, tripId })));
-      }
-
-      await db.checklists.where("tripId").equals(tripId).delete();
-      if (Array.isArray(parsed.checklists) && parsed.checklists.length > 0) {
-        await db.checklists.bulkPut(
-          parsed.checklists.map((entry) => ({
-            tripId,
-            localityId: String(entry.localityId),
-            checklist: entry.checklist || [],
-          })),
-        );
-      }
-
-      await db.comments.delete(tripId);
-      if (Array.isArray(parsed.comments) && parsed.comments.length > 0) {
-        await db.comments.put({ tripId, entries: parsed.comments });
-      }
+    pendingImport.value = await decodeTripArchive(file, (value, stage) => {
+      importStage.value = stage === 'parsing' ? "Preparing trip data" : "Reading trip file";
+      importProgress.value = stage === 'parsing' ? null : Math.round(value * 100);
     });
-    bumpEbdUpdatedAt();
-    await loadTrips();
-    selectedTripId.value = tripId;
-    transferStatus.value = "Trip imported.";
+    importName.value = uniqueTripName(libraryNames.value, pendingImport.value.trip.name);
+    if (!importCollision.value) await finishImport();
   } catch (error) {
+    transferFailed.value = true;
     transferStatus.value = `Import failed: ${error.message || error}`;
   } finally {
     isImporting.value = false;
     event.target.value = "";
   }
 };
+
 </script>
 
 <template>
-  <div class="row g-4 mt-1" v-if="!selectedTripId">
-    <div class="col-12">
-      <div class="card border-primary bg-primary-subtle">
-        <div class="card-body py-3">
-          <h5 class="card-title text-primary mb-2">
-            <i class="bi bi-compass-fill me-2"></i>
-            Welcome to eBird Trip Planner
-          </h5>
-          <p class="mb-2">
-            Turn raw eBird data into a real game plan. Load your EBD export, shape it into a trip,
-            and quickly see where your best species chances are.
-          </p>
-          <p class="mb-0 small text-muted">
-            Goal: help you bird smarter, not harder. Build trips, track targets, sync life lists and
-            trip reports, and focus your field time on species that matter most.
-          </p>
-        </div>
-      </div>
+  <div class="d-flex justify-content-between align-items-start gap-3 mb-3">
+    <div>
+      <h1 class="h4 mb-1">{{ welcome ? "Welcome to eBird Trip Planner" : "Your birding trips" }}</h1>
+      <p class="text-muted small mb-0">{{ welcome ? "Start with eBird data or a saved trip file. Then add your targets and plan where to go." : "Choose a trip, create one from eBird data, or import a saved file." }}</p>
     </div>
+    <button v-if="canInstallPwa" class="btn btn-outline-secondary btn-sm" type="button" @click="triggerPwaInstall">Install app</button>
   </div>
-  <div class="row g-4 mt-1">
-    <div class="col-lg-6">
-      <div class="card mb-3" v-if="trips.length">
-        <div class="card-body">
-          <div class="d-flex align-items-center justify-content-between gap-2">
-            <h5 class="card-title mb-0">Select active trip</h5>
-            <button
-              v-if="canInstallPwa"
-              class="btn btn-outline-secondary btn-sm"
-              type="button"
-              @click="triggerPwaInstall"
-            >
-              <i class="bi bi-download"></i>
-              <span class="ms-1">Install app</span>
-            </button>
-          </div>
-          <p class="text-muted small mb-2">
-            Choose the trip you want to manage. This selection updates the header indicator.
-          </p>
-          <select
-            v-model="selectedTripId"
-            class="form-select"
-            aria-label="Select the trip you want to edit"
-          >
-            <option v-if="!trips.length" value="" disabled selected>Select a trip</option>
-            <option v-for="trip in trips" :key="trip.id" :value="trip.id">
-              {{ trip.name }}
-            </option>
-          </select>
-          <div class="form-text text-muted small mt-1">
-            Trip actions below apply to the selected trip.
-          </div>
-          <div class="d-flex align-items-center gap-2 mt-3 flex-wrap" v-if="selectedTripId">
-            <button
-              class="btn btn-sm flex-fill app-action-btn app-action-btn--teal"
-              @click="openRenameModal"
-            >
-              <i class="bi bi-pencil-square me-1"></i>
-              Rename
-            </button>
-            <button
-              class="btn btn-sm flex-fill app-action-btn app-action-btn--green"
-              @click="exportTrip"
-              :disabled="!selectedTripId || isExporting"
-            >
-              <span v-if="isExporting" class="spinner-border spinner-border-sm me-1"></span>
-              <i v-else class="bi bi-download me-1"></i>
-              Export
-            </button>
-            <button
-              class="btn btn-sm flex-fill app-action-btn app-action-btn--danger"
-              @click="deleteTrip"
-            >
-              <i class="bi bi-trash3 me-1"></i>
-              Delete
-            </button>
-          </div>
+  <CloudTrips :local-trips="trips" :edit-times="tripEditTimes" :visit-counts="tripVisitCounts" :adding-trip="Boolean(addTripMode)" :external-busy="isImporting || isCreating"
+    :last-local-edit="tripEditTimes[selectedTripId] || 0" :local-visit-count="tripVisitCounts[selectedTripId] || 0" @opened="loadTripData" @selected="addTripMode = ''; transferStatus = ''">
+    <template #add-trip="{ busy }">
+      <div class="border-top pt-3 mt-3">
+        <h3 class="h6">Add a trip</h3>
+        <div class="d-flex gap-2 flex-wrap">
+          <button class="btn btn-outline-primary btn-sm" :disabled="busy || isImporting" :aria-expanded="addTripMode === 'create'" @click="addTripMode = addTripMode === 'create' ? '' : 'create'">Create from eBird data</button>
+          <button class="btn btn-outline-secondary btn-sm" :disabled="busy || isImporting" :aria-expanded="addTripMode === 'import'" @click="addTripMode = addTripMode === 'import' ? '' : 'import'">Import trip file</button>
         </div>
       </div>
-      <div class="card">
+    </template>
+    <template #new-trip="{ busy }">
+      <section v-show="addTripMode" class="card mb-3" aria-label="Add a new trip">
         <div class="card-body">
-          <h5 class="card-title">Create new birding trip</h5>
-          <Initiate @processed="handleProcessed" />
-          <hr />
-          <h5>Import existing birding trip</h5>
-          <p class="text-muted small mb-2">
-            Import a trip file that was previously exported from this app (via the “Export this
-            trip” button).
-          </p>
-          <input
-            type="file"
-            class="form-control"
-            accept=".json,application/json,text/plain,application/octet-stream"
-            @change="importTrip"
-            :disabled="isImporting"
-          />
+          <div class="d-flex justify-content-between gap-3 align-items-start mb-2">
+            <h2 class="h5 mb-0">{{ addTripMode === 'create' ? 'Create a new birding trip' : 'Import a saved trip file' }}</h2>
+          </div>
+          <p class="text-muted small">The trip will open in this browser. You can save it to cloud afterwards.</p>
+          <div v-show="addTripMode === 'create'">
+            <label for="new-trip-name" class="form-label fw-semibold">Trip name</label>
+            <input id="new-trip-name" v-model="newTripName" class="form-control mb-2" placeholder="e.g. Kenya, December 2026" :disabled="isCreating" required />
+            <p v-if="duplicateNewTripName" class="small text-danger">A trip with this name already exists. Choose another name.</p>
+            <Initiate :disabled="busy" :can-create="hasNewTripName && !duplicateNewTripName" :create-trip="handleProcessed" @busy="isCreating = $event" />
+          </div>
+          <div v-if="addTripMode === 'import'">
+            <label for="trip-archive-input" class="form-label fw-semibold small">Saved trip file</label>
+            <p class="small text-muted mb-2">Choose an .ebirdtrip or JSON backup exported from this app.</p>
+            <input id="trip-archive-input" type="file" class="form-control"
+              accept=".ebirdtrip,.gz,.json,application/gzip,application/json,text/plain,application/octet-stream" @change="importTrip" :disabled="isImporting || busy" />
+          </div>
+          <div v-if="isImporting" class="mt-3" role="status">
+            <div class="d-flex justify-content-between small mb-1"><span>{{ importStage }}</span><span v-if="importProgress !== null">{{ importProgress }}%</span></div>
+            <div class="progress" role="progressbar" :aria-label="importStage" :aria-valuenow="importProgress === null ? undefined : importProgress" aria-valuemin="0" aria-valuemax="100">
+              <div class="progress-bar" :class="{ 'progress-bar-striped progress-bar-animated': importProgress === null }" :style="{ width: importProgress === null ? '100%' : `${importProgress}%` }" />
+            </div>
+          </div>
+          <div v-if="pendingImport && importCollision && !isImporting" class="border rounded p-3 mt-3">
+            <h3 class="h6">You already have a trip named “{{ pendingImport.trip.name }}”</h3>
+            <p v-if="localImportCollision" class="small text-muted">Keep both trips by choosing a different name, or replace the browser copy of the existing trip. Its cloud version is updated only when you save to cloud.</p>
+            <p v-else class="small text-muted">A cloud trip with this name is already in your library. Choose a different name to import a separate trip, or open the existing cloud trip from the library.</p>
+            <form @submit.prevent="finishImport(false)">
+              <label for="import-trip-name" class="form-label small">Name for the imported trip</label>
+              <input id="import-trip-name" v-model="importName" class="form-control mb-2" required />
+              <p v-if="duplicateImportName" class="small text-danger">Choose a name that is not already in your library.</p>
+              <div class="d-flex gap-2 flex-wrap">
+                <button class="btn btn-primary btn-sm" :disabled="!importName.trim() || duplicateImportName">Import as a new trip</button>
+                <button v-if="localImportCollision" class="btn btn-outline-danger btn-sm" type="button" @click="finishImport(true)">Replace “{{ localImportCollision.name }}” in this browser</button>
+              </div>
+            </form>
+          </div>
+          <p v-if="transferStatus" class="small mt-3 mb-0" :class="transferFailed ? 'text-danger' : isExporting ? 'text-muted' : 'text-success'" role="status">{{ transferStatus }}</p>
+        </div>
+      </section>
+    </template>
+    <template #trip-actions="{ busy }">
+      <div class="d-flex justify-content-between align-items-start gap-3 flex-wrap mb-3">
+        <div>
+          <div class="small text-muted mb-1">Working on</div>
+          <div class="d-flex align-items-center gap-2">
+            <h2 class="h4 mb-1">{{ trips.find(trip => trip.id === selectedTripId)?.name }}</h2>
+            <button class="btn btn-link text-muted p-1" :disabled="busy" @click="openRenameModal" aria-label="Rename trip" title="Rename trip"><i class="bi bi-pencil" /></button>
+          </div>
+          <p class="small text-muted mb-0">Last browser edit: {{ formatSyncTimestamp(tripEditTimes[selectedTripId]) || 'date unknown' }}</p>
         </div>
       </div>
-    </div>
-
-    <div class="col-lg-6" v-if="selectedTripId">
+      <div class="d-flex gap-2 flex-wrap mb-3">
+        <button class="btn btn-outline-secondary btn-sm" :disabled="busy || isExporting" @click="exportTrip">
+          <span v-if="isExporting" class="spinner-border spinner-border-sm me-1"></span>Download backup
+        </button>
+        <button class="btn btn-link text-danger btn-sm" :disabled="busy || isExporting" @click="deleteTrip">Remove from browser</button>
+      </div>
+      <p v-if="transferStatus" class="small mb-2" :class="transferFailed ? 'text-danger' : isExporting ? 'text-muted' : 'text-success'" role="status">{{ transferStatus }}</p>
+      <p v-if="saveStatus" class="small text-success" role="status">{{ saveStatus }}</p>
+    </template>
+    <template #trip-details>
       <div class="card">
         <div class="card-body">
-          <h5 class="card-title">Targets</h5>
+          <h2 class="h5 card-title">Targets for {{ tripForm.name }}</h2>
           <p class="text-muted small mb-1">
             Sync life lists and trip reports to flag world, region, and trip targets.
           </p>
@@ -1060,6 +992,9 @@ const importTrip = async (event) => {
                   <i v-else class="bi bi-trash3"></i>
                 </button>
               </div>
+              <div v-if="isSyncingTripReport || isClearingTripReport" class="progress mt-2" role="progressbar" aria-label="Updating trip report">
+                <div class="progress-bar progress-bar-striped progress-bar-animated w-100" />
+              </div>
               <div
                 v-if="tripReportAlertMessage"
                 class="alert py-2 px-3 mt-2 mb-0 small d-flex align-items-center"
@@ -1106,8 +1041,9 @@ const importTrip = async (event) => {
           </div>
         </div>
       </div>
-    </div>
-  </div>
+
+    </template>
+  </CloudTrips>
   <footer class="tech-footer mt-4">
     <div class="tech-footer-links d-flex flex-wrap align-items-center justify-content-center gap-2 small text-muted">
       <span>v{{ appVersion }}</span>

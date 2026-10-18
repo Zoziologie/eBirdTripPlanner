@@ -65,7 +65,7 @@ onMounted(() => {
                 to="/create"
                 class="nav-link p-0 text-decoration-none text-nowrap app-nav-link"
                 active-class="active fw-semibold app-nav-link-active"
-                >Create</router-link
+                >Trips</router-link
               >
               <router-link
                 to="/speciesMap"
@@ -98,7 +98,7 @@ onMounted(() => {
                 class="nav-link px-2 py-2 text-decoration-none app-nav-link app-nav-link-mobile"
                 active-class="active fw-semibold app-nav-link-active-mobile"
                 @click="closeMobileNav"
-                >Create</router-link
+                >Trips</router-link
               >
               <router-link
                 to="/speciesMap"

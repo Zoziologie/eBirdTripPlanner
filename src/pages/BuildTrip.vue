@@ -2011,6 +2011,7 @@ const deleteVisit = async () => {
     visitIds.has(String(visit.id)) ? [visit.id, sorted[index + 1]?.id].filter(Boolean) : [],
   );
   await db.visits.bulkDelete(visitsToDelete.map((visit) => visit.id));
+  await db.trips.update(selectedTripId.value, { updatedAt: Date.now() });
   visits.value = visits.value.filter((visit) => !visitIds.has(String(visit.id)));
   const remainingSorted = getSortedVisits();
   selectedVisitId.value = fallbackVisitId || remainingSorted[0]?.id || "";

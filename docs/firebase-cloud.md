@@ -1,0 +1,75 @@
+# Firebase cloud storage
+
+The app provides persistent Google sign-in and app-managed cloud trips. Browser data is the working copy; cloud saving is manual. The Trips page combines browser and cloud entries into one library, with a linked browser copy shown alongside its cloud save date. The active trip owns its save, sharing, backup and target actions. Sharing opens one dialog with separate viewing and editing links underneath their respective access settings. Unsaved access changes disable copying until the settings are saved. Create from eBird data and Import trip file are separate ways to add a trip.
+
+## Project and configuration
+
+Firebase project: `ebird-trip-planner`. Authentication uses Google only. Firestore is Standard, Native mode, `(default)` database. Storage uses `ebird-trip-planner.firebasestorage.app` in `US-EAST1`. Production security rules are in the repository; do not switch either service into test mode.
+
+Set these public Firebase web settings in `.env.local`, and as GitHub Actions repository variables for deployment:
+
+```
+VITE_FIREBASE_API_KEY=
+VITE_FIREBASE_AUTH_DOMAIN=
+VITE_FIREBASE_PROJECT_ID=
+VITE_FIREBASE_STORAGE_BUCKET=
+VITE_FIREBASE_APP_ID=
+```
+
+No service-account key belongs in the frontend. Authentication remembers the account in this browser and refreshes the Firebase session. Google Drive integration has been removed. Existing local trips and files already saved in Drive are not migrated or deleted.
+
+Authorized login domains include `localhost`, `127.0.0.1`, the Firebase domains and `zoziologie.github.io`. Storage CORS origins are in `firebase-cors.json`. Apply them with:
+
+```
+gcloud storage buckets update gs://ebird-trip-planner.firebasestorage.app --cors-file=firebase-cors.json
+```
+
+Storage rules inspect Firestore access documents. The Firebase Storage service agent requires the `roles/firebaserules.firestoreServiceAgent` role in this project.
+
+## Free allowance and capacity requests
+
+Any verified Google account can create one cloud trip without an invitation. Each compressed archive is limited to 50 MiB. Archives include life and region lists and all exported trip data. Shared trips do not consume an editor's own allowance. There is no global user limit.
+
+The **Request more capacity** form writes `capacityRequests/<Firebase UID>` with email, requested total trip slots (2–10), reason and pending status. Requests do not change permissions or capacity. Only administrators can approve them.
+
+To approve in Firebase console → Firestore:
+
+1. Open a document in `capacityRequests` and copy its document ID (the user's Firebase UID).
+2. Create or update `cloudAccounts/<same UID>` with integer `tripSlots`, for example `3` for three 50 MiB trips (150 MiB maximum active archives).
+3. Set the request's `status` to `approved` or `declined`. Changing status alone does not change capacity.
+
+The client cannot edit its allowance. Default capacity is one trip if no `cloudAccounts` document exists. Lowering an allowance prevents creation in extra slots but preserves access to existing trips; it does not delete anything or ban the account. This is per-trip capacity, not an aggregate byte allowance. A total-size model would need a different reservation/accounting scheme.
+
+## Retention and activity
+
+The app explains that free cloud storage has no guarantee of long-term retention and that trips inactive for more than six months may be deleted. Keep exported backups. Opening a trip while signed in as its owner or editor, or saving it, records `lastActiveAt`. Public anonymous views and merely listing cloud trips do not renew activity. There is no automatic six-month deletion job: the weekly report identifies candidates for an administrator to review.
+
+New revisions upload separately and are published only after completion. A transaction checks the previous revision to stop a stale browser from replacing someone else's save. Old archives are removed after a successful save. Interrupted first uploads can retry the same empty slot. Editors must reload before resolving a conflicting save; this is manual collaboration, not simultaneous editing.
+
+Viewing links require the owner to enable public viewing. Recipients do not need accounts. Access is checked through security rules rather than permanent download-token links, so disabling public viewing blocks later downloads; already downloaded copies cannot be recalled. The editor-email list is stored separately from public trip metadata.
+
+## Costs and operational limits
+
+Blaze billing is required for Storage. The free allowance is usage-based, not a guarantee of a zero bill. At 100 users, one 50 MiB file each would occupy about 4.9 GiB before temporary uploads and retained deleted versions. The bucket currently has Google's default seven-day soft-delete retention: frequent saves can retain additional billable data. Monitor actual Storage/Firestore usage and billing before inviting more users. There is no automatic spend cutoff in this implementation.
+
+A browser crash can leave an upload reservation for ten minutes and a staging object. A subsequent save clears the previous staging object. There is no scheduled orphan cleanup yet. Owners can use **Cloud actions → Delete cloud trip** to stop sharing, remove the cloud archive and free its slot while keeping the browser copy. Reload first if the cloud revision changed. Deleted archives follow the bucket’s soft-delete retention.
+
+## Validation
+
+```
+npm test
+npm run test:cloud:rules
+npm run build
+```
+
+The security tests use a demo project with Firestore and Storage emulators. Java 17 is supported by the pinned Firebase CLI 14; upgrade the CLI and Java together later.
+
+For browser testing against emulators, run Auth, Firestore and Storage and start Vite with `VITE_FIREBASE_EMULATORS=true`. Never set that variable for a production build.
+
+Manual checks: Google login; reload remembers login; save and reload a trip; life/region lists survive; edits update the same file; a stale save is rejected; anonymous viewing works only while public viewing is enabled; an invited Google account saves back to the same trip; uninvited accounts cannot edit.
+
+## Usage reports
+
+Run `python3 scripts/cloud_usage_report.py` using your existing administrator `gcloud` login. The script is read-only and reports owners with saved trips, published/public trips, published archive bytes, all live bucket bytes, custom allowances, pending capacity requests and trips inactive for more than six months. It never approves requests or deletes data. It excludes retained soft-deleted objects, billing totals and download traffic; check Google Cloud Billing/Storage monitoring for those.
+
+A Codex heartbeat in this chat is scheduled every Monday at 09:00 Europe/Paris to run the report. This depends on the local Codex environment and administrator login being available; it is not a server-side Firebase job or an email service. Pause or change it in Codex automations.

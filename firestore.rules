@@ -1,0 +1,96 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function googleUser() {
+      return request.auth != null && request.auth.token.email_verified == true
+        && request.auth.token.firebase.sign_in_provider == 'google.com';
+    }
+    function slots() {
+      return exists(/databases/$(database)/documents/cloudAccounts/$(request.auth.uid))
+        ? get(/databases/$(database)/documents/cloudAccounts/$(request.auth.uid)).data.tripSlots : 1;
+    }
+    function ownerId(id) { return googleUser() && id.matches(request.auth.uid + '_[0-9]'); }
+    function ownSlot(id) {
+      return ownerId(id) && (
+        (id == request.auth.uid + '_0' && slots() > 0)
+        || (id == request.auth.uid + '_1' && slots() > 1)
+        || (id == request.auth.uid + '_2' && slots() > 2)
+        || (id == request.auth.uid + '_3' && slots() > 3)
+        || (id == request.auth.uid + '_4' && slots() > 4)
+        || (id == request.auth.uid + '_5' && slots() > 5)
+        || (id == request.auth.uid + '_6' && slots() > 6)
+        || (id == request.auth.uid + '_7' && slots() > 7)
+        || (id == request.auth.uid + '_8' && slots() > 8)
+        || (id == request.auth.uid + '_9' && slots() > 9)
+      );
+    }
+    function access(id) { return get(/databases/$(database)/documents/tripAccess/$(id)).data; }
+    function editor(id) { return googleUser() && (access(id).ownerUid == request.auth.uid || request.auth.token.email.lower() in access(id).editorEmails); }
+    function validPending(pending) {
+      return pending is map && pending.keys().hasOnly(['revision', 'uid', 'expiresAt'])
+        && pending.uid == request.auth.uid && pending.revision is string
+        && pending.revision.matches('[a-zA-Z0-9-]{1,64}') && pending.expiresAt is timestamp
+        && pending.expiresAt > request.time && pending.expiresAt <= request.time + duration.value(11, 'm');
+    }
+    function validTrip(data) {
+      return data.keys().hasOnly(['ownerUid', 'name', 'public', 'revision', 'size', 'localUpdatedAt', 'visitCount', 'updatedAt', 'lastActiveAt', 'pending'])
+        && data.ownerUid is string && data.name is string && data.name.size() <= 200
+        && data.public is bool && data.revision is string && data.revision.size() <= 64
+        && data.size is int && data.size >= 0 && data.size <= 50 * 1024 * 1024
+        && data.localUpdatedAt is number && data.visitCount is int && data.visitCount >= 0
+        && data.updatedAt is timestamp && data.lastActiveAt is timestamp;
+    }
+    match /cloudAccounts/{uid} {
+      allow get: if googleUser() && request.auth.uid == uid;
+    }
+    match /capacityRequests/{uid} {
+      allow get: if googleUser() && request.auth.uid == uid;
+      allow create, update: if googleUser() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['email', 'tripSlots', 'reason', 'status', 'updatedAt'])
+        && request.resource.data.email == request.auth.token.email.lower()
+        && request.resource.data.tripSlots is int && request.resource.data.tripSlots >= 2 && request.resource.data.tripSlots <= 10
+        && request.resource.data.reason is string && request.resource.data.reason.size() <= 1000
+        && request.resource.data.status == 'pending' && request.resource.data.updatedAt == request.time;
+    }
+    match /tripAccess/{id} {
+      allow read: if googleUser() && (resource.data.ownerUid == request.auth.uid || request.auth.token.email.lower() in resource.data.editorEmails);
+      allow create: if ownSlot(id)
+        && request.resource.data.keys().hasOnly(['ownerUid', 'ownerEmail', 'editorEmails'])
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.ownerEmail == request.auth.token.email.lower()
+        && request.resource.data.editorEmails == []
+        && getAfter(/databases/$(database)/documents/cloudTrips/$(id)).data.ownerUid == request.auth.uid;
+      allow update: if googleUser() && resource.data.ownerUid == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['editorEmails'])
+        && request.resource.data.editorEmails is list && request.resource.data.editorEmails.size() <= 10;
+      allow delete: if ownerId(id) && !existsAfter(/databases/$(database)/documents/cloudTrips/$(id));
+    }
+    match /cloudTrips/{id} {
+      allow get: if ownerId(id) || resource.data.public == true || editor(id);
+      allow list: if resource.data.ownerUid == request.auth.uid || editor(id);
+      allow create: if ownSlot(id)
+        && validTrip(request.resource.data) && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.public == false && request.resource.data.revision == '' && request.resource.data.size == 0
+        && validPending(request.resource.data.pending) && request.resource.data.lastActiveAt == request.time
+        && getAfter(/databases/$(database)/documents/tripAccess/$(id)).data.ownerUid == request.auth.uid;
+      allow update: if editor(id) && validTrip(request.resource.data) && (
+        (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastActiveAt']) && request.resource.data.lastActiveAt == request.time)
+        ||
+        (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['pending'])
+          && validPending(request.resource.data.pending)
+          && (resource.data.pending == null || resource.data.pending.expiresAt <= request.time))
+        || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['pending'])
+          && request.resource.data.pending == null && resource.data.pending.uid == request.auth.uid)
+        || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'revision', 'size', 'localUpdatedAt', 'visitCount', 'updatedAt', 'lastActiveAt', 'pending'])
+          && resource.data.pending.uid == request.auth.uid && resource.data.pending.expiresAt > request.time
+          && request.resource.data.revision == resource.data.pending.revision && request.resource.data.pending == null
+          && request.resource.data.updatedAt == request.time && request.resource.data.lastActiveAt == request.time)
+        || (resource.data.ownerUid == request.auth.uid && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['public']))
+        || (resource.data.ownerUid == request.auth.uid && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['revision', 'size', 'public', 'pending'])
+          && request.resource.data.revision == '' && request.resource.data.size == 0 && request.resource.data.public == false
+          && request.resource.data.pending == null && (resource.data.pending == null || resource.data.pending.expiresAt <= request.time))
+      );
+      allow delete: if ownerId(id) && resource.data.revision == '' && resource.data.pending == null;
+    }
+  }
+}

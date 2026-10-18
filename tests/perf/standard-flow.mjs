@@ -265,11 +265,12 @@ try {
 
   const firstLoad = await timed("firstLoad", async () => {
     await page.goto(`${origin}${BASE_PATH}create`, { waitUntil: "networkidle" });
-    await page.getByText("Create new birding trip").waitFor({ state: "visible" });
+    await page.getByRole("button", { name: "Create from eBird data", exact: true }).waitFor({ state: "visible" });
   });
   assertThreshold(rows, failures, "firstLoadMs", firstLoad.ms);
 
   const ebdRead = await timed("ebdRead", async () => {
+    await page.getByRole("button", { name: "Create from eBird data", exact: true }).click();
     await page.setInputFiles("#fileInput", ebdPaths);
     await page
       .getByText("Loaded 1,440 records into 180 checklists.")
@@ -278,8 +279,9 @@ try {
   assertThreshold(rows, failures, "ebdReadMs", ebdRead.ms);
 
   const createTrip = await timed("createTrip", async () => {
+    await page.getByLabel("Trip name", { exact: true }).fill("Performance test trip");
     await page.getByRole("button", { name: /^Create Trip$/ }).click();
-    await page.getByText("Targets").waitFor({ timeout: thresholds.createTripMs + 5000 });
+    await page.getByRole("heading", { name: /^Targets for / }).waitFor({ timeout: thresholds.createTripMs + 5000 });
     await page.getByText("Total Species (EBD):").waitFor({ state: "visible" });
   });
   assertThreshold(rows, failures, "createTripMs", createTrip.ms);
@@ -326,8 +328,8 @@ try {
 
   const repeatedNavigation = await timed("repeatedNavigation", async () => {
     for (let index = 0; index < 12; index += 1) {
-      await page.getByRole("link", { name: "Create" }).click();
-      await page.getByText("Create new birding trip").waitFor({ state: "visible" });
+      await page.getByRole("link", { name: "Trips" }).click();
+      await page.getByRole("button", { name: "Create from eBird data", exact: true }).waitFor({ state: "visible" });
       await page.getByRole("link", { name: "Species List" }).click();
       await showAllSpeciesRows(page);
     }

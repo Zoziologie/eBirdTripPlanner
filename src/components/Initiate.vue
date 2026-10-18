@@ -14,7 +14,7 @@
         multiple
         ref="fileInput"
         class="form-control"
-        :disabled="disabled"
+        :disabled="disabled || isImporting || isProcessing"
       />
       <div v-if="isImporting" class="mt-2">
         <div v-if="importPhase === 'Reading data'" class="progress">
@@ -41,7 +41,7 @@
 
       <!-- Success message - only after raw data is loaded -->
       <div
-        v-if="loadedRecordCount > 0 && readingFileProgress === 0 && !hasError"
+        v-if="loadedRecordCount > 0 && !isImporting && !hasError"
         class="alert alert-success alert-dismissible mt-1 py-1"
       >
         <i class="bi bi-check-circle-fill me-2"></i>
@@ -68,6 +68,7 @@
         <select
           id="stateFilter"
           v-model="filters.state"
+          :disabled="isProcessing"
           class="form-select form-select-sm"
           multiple
           size="4"
@@ -84,6 +85,7 @@
         <select
           id="countyFilter"
           v-model="filters.county"
+          :disabled="isProcessing"
           class="form-select form-select-sm"
           multiple
           size="4"
@@ -104,6 +106,7 @@
             type="number"
             id="yearMinFilter"
             v-model.number="filters.minYear"
+          :disabled="isProcessing"
             class="form-control form-control-sm"
             placeholder="Min"
             :min="availableYears.min"
@@ -115,6 +118,7 @@
             type="number"
             id="yearMaxFilter"
             v-model.number="filters.maxYear"
+          :disabled="isProcessing"
             class="form-control form-control-sm"
             placeholder="Max"
             :min="availableYears.min"
@@ -130,6 +134,7 @@
           <select
             id="monthMinFilter"
             v-model.number="filters.minMonth"
+          :disabled="isProcessing"
             class="form-select form-select-sm"
           >
             <option :value="null">Min</option>
@@ -142,6 +147,7 @@
           <select
             id="monthMaxFilter"
             v-model.number="filters.maxMonth"
+          :disabled="isProcessing"
             class="form-select form-select-sm"
           >
             <option :value="null">Max</option>
@@ -154,15 +160,15 @@
     </div>
   </div>
   <!-- Process Button -->
-  <div class="row mt-3" v-if="loadedRecordCount > 0 && readingFileProgress === 0">
+  <div class="row mt-3" v-if="loadedRecordCount > 0 && !isImporting">
     <p class="text-muted">
       Select the region(s) and time range of interest. Both complete and incomplete checklists are
       kept, but reporting rates use complete checklists by default.
     </p>
     <div class="col-auto d-flex align-items-center gap-3">
-      <button @click="processChecklists" class="btn btn-primary" :disabled="isProcessing">
+      <button @click="processChecklists" class="btn btn-primary" :disabled="disabled || isProcessing || !canCreate">
         <span v-if="isProcessing" class="spinner-border spinner-border-sm me-2"></span>
-        {{ isProcessing ? "Filtering..." : "Create Trip" }}
+        {{ isProcessing ? "Creating trip…" : "Create Trip" }}
       </button>
     </div>
     <div class="col-auto d-flex align-items-end">
@@ -173,10 +179,11 @@
   </div>
   <div class="row mt-3" v-if="saveStatus">
     <div class="col">
-      <div :class="['alert', isProcessing ? 'alert-info' : 'alert-success', 'py-2', 'mb-0']">
+      <div :class="['alert', hasError ? 'alert-danger' : isProcessing ? 'alert-info' : 'alert-success', 'py-2', 'mb-0']">
         {{ saveStatus }}
         <template v-if="isProcessing">
-          <div v-if="processingTotal > 0" class="progress mt-2">
+          <div class="small mb-1">Step {{ processingStep }} of 5</div>
+          <div class="progress mt-2">
             <div
               class="progress-bar"
               role="progressbar"
@@ -206,25 +213,24 @@
 </template>
 
 <script>
-import { nextTick, onBeforeUnmount, ref, reactive, shallowRef } from "vue";
-import Papa from "papaparse";
+import { nextTick, onBeforeUnmount, ref, reactive, shallowRef, watch } from "vue";
 import JSZip from "jszip";
 import {
   taxonomyByScientificName as taxonomy_sci,
   taxonomyByCode as taxonomy_code,
 } from "../utils/taxonomy";
 import {
-  addEbdRow,
-  beginEbdFile,
   createEbdImportAccumulator,
-  EBD_PARSE_OPTIONS,
   finalizeEbdImport,
   streamEbdZipEntry,
+  streamEbdTextFile,
 } from "../utils/ebdImport";
 
 export default {
-  emits: ["processed"],
+  emits: ["busy"],
   props: {
+    canCreate: { type: Boolean, default: true },
+    createTrip: { type: Function, required: true },
     disabled: {
       type: Boolean,
       default: false,
@@ -247,6 +253,8 @@ export default {
     // Checklists
     const isProcessing = ref(false);
     const processingProgress = ref(0);
+    const processingStep = ref(1);
+    watch([isImporting, isProcessing], ([reading, creating]) => emit("busy", reading || creating));
     const processingCompleted = ref(0);
     const processingTotal = ref(0);
     const processingUnit = ref("checklists");
@@ -351,21 +359,6 @@ export default {
       readingFileProgress.value = 0;
     };
 
-    const parseTextFile = (file, accumulator, onProgress) =>
-      new Promise((resolve, reject) => {
-        beginEbdFile(accumulator);
-        Papa.parse(file, {
-          ...EBD_PARSE_OPTIONS,
-          chunkSize: 1024 * 1024,
-          chunk(results) {
-            for (const row of results.data) addEbdRow(row, accumulator);
-            onProgress(results.meta.cursor / file.size);
-          },
-          complete: resolve,
-          error: reject,
-        });
-      });
-
     const handleFileUpload = async (event) => {
       const files = Array.from(event.target.files || []);
       if (files.length === 0) return;
@@ -413,7 +406,7 @@ export default {
 
           if (file.name.toLowerCase().endsWith(".txt")) {
             importPhase.value = "Reading data";
-            await parseTextFile(file, accumulator, updateProgress);
+            await streamEbdTextFile(file, accumulator, updateProgress);
             completedBytes += file.size;
             continue;
           }
@@ -463,13 +456,15 @@ export default {
       processingCompleted.value = completed;
       processingTotal.value = total;
       processingUnit.value = unit;
-      processingProgress.value = total ? (completed / total) * 100 : 100;
+      processingProgress.value = ((processingStep.value - 1) + (total ? completed / total : 0)) / 5 * 100;
     };
 
     const processChecklists = async () => {
       if (loadedChecklists.value.length === 0) return;
 
       isProcessing.value = true;
+      hasError.value = false;
+      processingStep.value = 1;
       startElapsedTimer(processingElapsed);
       saveStatus.value = "Filtering checklists...";
       locations.value = [];
@@ -510,10 +505,17 @@ export default {
       }
 
       checklists.value = filteredChecklists;
-      await processLocations();
+      try { await processLocations(); }
+      catch (error) {
+        saveStatus.value = `Trip creation failed: ${error.message}`;
+        hasError.value = true;
+        stopElapsedTimer(processingElapsed);
+        isProcessing.value = false;
+      }
     };
 
     const processLocations = async () => {
+      processingStep.value = 2;
       saveStatus.value = "Building locations...";
       const locationMap = new Map();
       const sourceChecklists = checklists.value;
@@ -589,6 +591,7 @@ export default {
     };
 
     const processSpecies = async () => {
+      processingStep.value = 3;
       saveStatus.value = "Building species list...";
       const speciesSet = new Set();
       const sourceLocations = locations.value;
@@ -619,10 +622,10 @@ export default {
         })
         .sort((a, b) => a.taxonOrder - b.taxonOrder);
 
-      saveStatus.value = "Finalizing results...";
-      processingTotal.value = 0;
+      processingStep.value = 4;
+      saveStatus.value = "Preparing trip data...";
       await yieldToBrowser();
-      processDone();
+      await processDone();
     };
 
     const buildSerializableFilters = () => ({
@@ -634,7 +637,7 @@ export default {
       county: Array.isArray(filters.county) ? [...filters.county] : [],
     });
 
-    const processDone = () => {
+    const processDone = async () => {
       const region = { code: "", name: "" };
       const uniqueStates = new Set();
       const uniqueCountries = new Set();
@@ -667,7 +670,8 @@ export default {
       // which cannot be recovered from per-location medians.
       const preparedLocations = locations.value;
       const checklistsByLocation = [];
-      for (const location of preparedLocations) {
+      updateProcessingProgress(0, preparedLocations.length + checklists.value.length, "records");
+      for (const [index, location] of preparedLocations.entries()) {
         location.species_checklist_counts = Array.from(location.speciesChecklistCounts.entries());
         delete location.speciesChecklistCounts;
 
@@ -684,6 +688,10 @@ export default {
         location.checklist_distances_km = distances;
         checklistsByLocation.push({ localityId: location.locality_id, checklist: entries });
         delete location.checklist;
+        if (index % 1000 === 0) {
+          updateProcessingProgress(index + 1, preparedLocations.length + checklists.value.length, "records");
+          await yieldToBrowser();
+        }
       }
 
       // The comment corpus is built from the filtered checklists rather than from
@@ -691,7 +699,11 @@ export default {
       // out of every statistic on purpose, but "what is birding here like" is
       // exactly the question they answer.
       const commentEntries = [];
-      for (const checklist of checklists.value) {
+      for (const [index, checklist] of checklists.value.entries()) {
+        if (index % 1000 === 0) {
+          updateProcessingProgress(preparedLocations.length + index, preparedLocations.length + checklists.value.length, "records");
+          await yieldToBrowser();
+        }
         const speciesComments = checklist.species_comments || [];
         const checklistComment = checklist.checklist_comment || "";
         if (!checklistComment && !speciesComments.length) continue;
@@ -714,8 +726,13 @@ export default {
         region,
         filters: buildSerializableFilters(),
       };
+      processingStep.value = 5;
+      saveStatus.value = "Saving trip in this browser…";
+      updateProcessingProgress(0, 5, "save steps");
+      await yieldToBrowser();
+      await props.createTrip(payload, updateProcessingProgress);
+      processingProgress.value = 100;
       resetLoadedData();
-      emit("processed", payload);
       readingFileStatus.value = "Trip created. Import data cleared from memory.";
       saveStatus.value = "";
       stopElapsedTimer(processingElapsed);
@@ -735,6 +752,7 @@ export default {
       loadedRecordCount,
       isProcessing,
       processingProgress,
+      processingStep,
       processingCompleted,
       processingTotal,
       processingUnit,

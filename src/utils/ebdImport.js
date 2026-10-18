@@ -267,17 +267,39 @@ export const streamEbdZipEntry = (entry, accumulator, onProgress) =>
     });
     parser._nextChunk = () => {};
 
+    const decoder = new TextDecoder();
+    let bytesRead = 0;
     entry
-      .internalStream("string")
-      .on("data", (chunk, metadata) => {
+      .internalStream("uint8array")
+      .on("data", chunk => {
         parser._finished = false;
-        parser.parseChunk(chunk);
-        onProgress?.(metadata.percent, accumulator.recordCount);
+        parser.parseChunk(decoder.decode(chunk, { stream: true }));
+        bytesRead += chunk.byteLength;
+        onProgress?.(bytesRead / entry._data.uncompressedSize * 100, accumulator.recordCount);
       })
       .on("error", reject)
       .on("end", () => {
         parser._finished = true;
-        parser.parseChunk("");
+        parser.parseChunk(decoder.decode());
       })
       .resume();
   });
+
+// Read byte-sized chunks so UTF-8 names and comments do not distort the progress.
+export const streamEbdTextFile = async (file, accumulator, onProgress) => {
+  beginEbdFile(accumulator);
+  const parser = new Papa.StringStreamer({
+    ...EBD_PARSE_OPTIONS,
+    chunk(results) { for (const row of results.data) addEbdRow(row, accumulator); },
+  });
+  parser._nextChunk = () => {};
+  const decoder = new TextDecoder();
+  for (let offset = 0; offset < file.size; offset += 1024 * 1024) {
+    const end = Math.min(offset + 1024 * 1024, file.size);
+    parser._finished = false;
+    parser.parseChunk(decoder.decode(await file.slice(offset, end).arrayBuffer(), { stream: true }));
+    onProgress(end / file.size);
+  }
+  parser._finished = true;
+  parser.parseChunk(decoder.decode());
+};

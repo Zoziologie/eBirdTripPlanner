@@ -139,11 +139,12 @@ try {
   };
 
   await page.goto(`${origin}${BASE_PATH}create`, { waitUntil: "networkidle" });
-  await page.getByText("Create new birding trip").waitFor();
+  await page.getByRole("button", { name: "Create from eBird data", exact: true }).waitFor();
 
   record(
     "importMs",
     await timed(async () => {
+      await page.getByRole("button", { name: "Create from eBird data", exact: true }).click();
       await page.setInputFiles("#fileInput", [fixture]);
       await page
         .getByText(/Loaded [\d,]+ records into [\d,]+ checklists\./)
@@ -155,6 +156,7 @@ try {
   record(
     "createTripMs",
     await timed(async () => {
+      await page.getByLabel("Trip name", { exact: true }).fill("Performance test trip");
       await page.getByRole("button", { name: /^Create Trip$/ }).click();
       await page.getByText("Total Species (EBD):").waitFor({ timeout: thresholds.createTripMs + 30000 });
     }),

@@ -4,7 +4,7 @@ import CreateTrip from "./pages/CreateTrip.vue";
 // BuildTrip and SpeciesMap pull in mapbox-gl and turf; loading them lazily keeps
 // several megabytes out of the initial bundle for users who never open a map.
 const routes = [
-  { path: "/", redirect: "/create" },
+  { path: "/", redirect: (to) => ({ path: "/create", query: to.query }) },
   { path: "/create", component: CreateTrip },
   {
     path: "/buildTrip",
